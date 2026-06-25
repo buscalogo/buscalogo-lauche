@@ -1,0 +1,4 @@
+host: buscalogo.bl
+type: static
+root: www/buscalogo.com
+enabled: true

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BuscaLogo Agent</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="logo">B</div>
+    <div>
+      <h1>BuscaLogo Agent</h1>
+      <span id="node-name" class="muted">—</span>
+    </div>
+  </div>
+  <div class="badges">
+    <span id="dns-badge" class="badge">DNS: —</span>
+    <span id="api-badge" class="badge ok">online</span>
+  </div>
+</header>
+
+<div id="systray-warning" class="systray-banner" style="display:none">
+  <span>&#9888;&#65039; &Iacute;cone do systray pode n&atilde;o aparecer: <b id="systray-msg"></b></span>
+  <span id="systray-help" class="muted"></span>
+</div>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="dashboard">Visão Geral</button>
+  <button class="tab" data-tab="network">Rede</button>
+  <button class="tab" data-tab="dns">DNS</button>
+  <button class="tab" data-tab="sites">Sites</button>
+  <button class="tab" data-tab="config">Configurações</button>
+  <button class="tab" data-tab="logs">Logs</button>
+</nav>
+
+<main>
+
+<!-- ===== TAB: DASHBOARD ===== -->
+<div class="tab-panel active" id="tab-dashboard">
+  <div class="grid three">
+    <div class="card" id="card-coredns">
+      <div class="card-head">
+        <h2>CoreDNS</h2>
+        <span class="dot" data-state="stopped"></span>
+      </div>
+      <div class="card-body">
+        <div class="kv"><span>Estado</span><b class="state">—</b></div>
+        <div class="kv"><span>PID</span><b class="pid">—</b></div>
+        <div class="kv"><span>Uptime</span><b class="uptime">—</b></div>
+        <div class="kv"><span>Reinícios</span><b class="restarts">—</b></div>
+      </div>
+      <div class="card-footer">
+        <div class="actions">
+          <button data-svc="coredns" data-act="start" class="btn green">Iniciar</button>
+          <button data-svc="coredns" data-act="stop" class="btn red">Parar</button>
+          <button data-svc="coredns" data-act="restart" class="btn">Reiniciar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-yggdrasil">
+      <div class="card-head">
+        <h2>Yggdrasil</h2>
+        <span class="dot" data-state="stopped"></span>
+      </div>
+      <div class="card-body">
+        <div class="kv"><span>Estado</span><b class="state">—</b></div>
+        <div class="kv"><span>PID</span><b class="pid">—</b></div>
+        <div class="kv"><span>Uptime</span><b class="uptime">—</b></div>
+        <div class="kv"><span>Reinícios</span><b class="restarts">—</b></div>
+        <div class="kv"><span>IPv6</span><b id="ygg-addr">—</b></div>
+        <div class="kv"><span>Peers</span><b id="ygg-peers-count">—</b></div>
+      </div>
+      <div class="card-footer">
+        <div class="actions">
+          <button data-svc="yggdrasil" data-act="start" class="btn green">Iniciar</button>
+          <button data-svc="yggdrasil" data-act="stop" class="btn red">Parar</button>
+          <button data-svc="yggdrasil" data-act="restart" class="btn">Reiniciar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-couchdb">
+      <div class="card-head">
+        <h2>CouchDB</h2>
+        <span class="dot" data-state="stopped"></span>
+      </div>
+      <div class="card-body">
+        <div class="kv"><span>Estado</span><b class="state">—</b></div>
+        <div class="kv"><span>PID</span><b class="pid">—</b></div>
+        <div class="kv"><span>Uptime</span><b class="uptime">—</b></div>
+        <div class="kv"><span>Reinícios</span><b class="restarts">—</b></div>
+        <div class="kv"><span>URL</span><b id="couch-url" class="mono" style="font-size:12px">—</b></div>
+        <div class="kv"><span>Admin</span><b id="couch-admin-user" class="mono" style="font-size:12px">—</b></div>
+        <div class="kv"><span>Senha</span><b id="couch-admin-pass" class="mono couch-pass-value">—</b></div>
+        <div class="kv"><span>Databases</span><b id="couch-dbs-count">—</b></div>
+      </div>
+      <div class="card-footer">
+        <div class="actions">
+          <button id="couch-copy-pass" class="btn" type="button" title="Copiar senha">Copiar senha</button>
+          <button id="couch-regen-pass" class="btn" type="button" title="Gerar nova senha admin">Nova senha</button>
+        </div>
+        <div class="actions">
+          <button data-svc="couchdb" data-act="start" class="btn green">Iniciar</button>
+          <button data-svc="couchdb" data-act="stop" class="btn red">Parar</button>
+          <button data-svc="couchdb" data-act="restart" class="btn">Reiniciar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Estado do Sistema</h2></div>
+    <div class="card-body grid three">
+      <div class="stat-card">
+        <span class="stat-label">Modo DNS</span>
+        <span id="sys-mode-badge" class="stat-value badge">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Porta Web</span>
+        <span id="web-port-badge" class="stat-value badge">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">API</span>
+        <span id="api-badge-2" class="stat-value badge ok">online</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TAB: NETWORK ===== -->
+<div class="tab-panel" id="tab-network">
+  <div class="card">
+    <div class="card-head"><h2>Endereço Yggdrasil</h2><span class="dot" id="ygg-dot-network" data-state="stopped"></span></div>
+    <div class="card-body">
+      <div class="ygg-addr-row">
+        <code id="ygg-addr-display" class="ygg-addr-value">—</code>
+        <button id="ygg-copy-btn" class="btn small" title="Copiar endereço IPv6">Copiar</button>
+      </div>
+      <div class="kv" style="margin-top:12px"><span>Chave Pública</span><b id="ygg-pubkey" class="mono" style="font-size:12px">—</b></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Peers Conectados</h2><span id="ygg-peers-badge" class="badge">0</span></div>
+    <div class="card-body" id="ygg-peers-list">
+      <div class="muted">Nenhum peer conectado.</div>
+    </div>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <div class="card-head"><h2>Identidade</h2></div>
+      <div class="card-body">
+        <p class="hint" style="padding:0;margin:0 0 12px">Exporte ou importe a identidade do nó para migrar o endereço IPv6 entre instalações.</p>
+      </div>
+      <div class="actions">
+        <button id="ygg-export" class="btn">Exportar identidade</button>
+        <button id="ygg-import" class="btn">Importar identidade</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Privilégio TUN</h2></div>
+      <div class="card-body">
+        <p class="hint" style="padding:0;margin:0 0 12px">Concede cap_net_admin ao Yggdrasil para criar interfaces de rede TUN. Necessário para funcionamento completo.</p>
+      </div>
+      <div class="actions">
+        <button id="ygg-priv" class="btn">Conceder TUN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Export -->
+  <div id="modal-export" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-head">
+        <h2>Identidade do Nó</h2>
+        <button class="modal-close" data-modal="modal-export">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="padding:0;margin:0 0 8px">Chave privada Yggdrasil. Guarde em local seguro. Com ela é possível recriar o mesmo endereço IPv6 em outra máquina.</p>
+        <textarea id="ygg-export-key" rows="3" readonly style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;font-family:var(--mono);resize:none"></textarea>
+      </div>
+      <div class="actions">
+        <button id="ygg-export-copy" class="btn">Copiar chave</button>
+        <button class="btn" data-modal="modal-export">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Import -->
+  <div id="modal-import" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-head">
+        <h2>Importar Identidade</h2>
+        <button class="modal-close" data-modal="modal-import">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="padding:0;margin:0 0 8px">Cole a chave privada exportada de outro nó. O Yggdrasil será reiniciado com o novo endereço IPv6.</p>
+        <textarea id="ygg-import-key" rows="3" placeholder="Cole a chave privada aqui..." style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;font-family:var(--mono);resize:none"></textarea>
+      </div>
+      <div class="actions">
+        <button id="ygg-import-confirm" class="btn green">Importar e reiniciar</button>
+        <button class="btn" data-modal="modal-import">Cancelar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TAB: DNS ===== -->
+<div class="tab-panel" id="tab-dns">
+  <div class="card">
+    <div class="card-head"><h2>Resolvedor DNS</h2><span id="dns-mode-badge" class="badge">—</span></div>
+    <div class="card-body" style="display:flex;flex-direction:column;gap:16px">
+      <div class="grid three">
+        <div class="kv"><span>Modo</span><b id="dns-status-mode">—</b></div>
+        <div class="kv"><span>Listen</span><b id="dns-status-listen">—</b></div>
+        <div class="kv"><span>Estado</span><b id="dns-status-state">—</b></div>
+        <div class="kv"><span>PID</span><b id="dns-status-pid">—</b></div>
+        <div class="kv"><span>Uptime</span><b id="dns-status-uptime">—</b></div>
+        <div class="kv"><span>Reinícios</span><b id="dns-status-restarts">—</b></div>
+      </div>
+      <div class="ygg-addr-row" id="dns-ygg-addr-row" style="display:none;margin-top:4px">
+        <code id="dns-ygg-addr" class="ygg-addr-value" style="font-size:12px"></code>
+        <button id="dns-ygg-copy" class="btn small" title="Copiar endereço DNS">Copiar</button>
+      </div>
+      <details>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent)">Upstreams DNS</summary>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-family:var(--mono)">
+          <div style="color:var(--muted);margin-bottom:4px">Clearnet (forward .):</div>
+          <div id="dns-upstreams"></div>
+          <div class="grid two" style="margin-top:8px;gap:6px">
+            <input id="dns-upstream-input" type="text" placeholder="Ex: 9.9.9.9" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px">
+            <button id="dns-upstream-add" class="btn green" style="white-space:nowrap">Adicionar</button>
+          </div>
+          <div id="dns-yggdns" style="display:none">
+            <div style="color:var(--green);margin:8px 0 4px">Yggdrasil (forward ygg):</div>
+            <div id="dns-yggdns-list"></div>
+          </div>
+        </div>
+      </details>
+      <details>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent)">BuscaLogo TLDs</summary>
+        <div id="dns-tlds" style="margin-top:8px;font-size:12.5px;font-family:var(--mono);color:var(--text)"></div>
+      </details>
+      <details>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent)">Sistema</summary>
+        <div style="margin-top:8px" class="grid three">
+          <div class="kv"><span>Porta 53</span><b id="dns-sys-port53">—</b></div>
+          <div class="kv"><span>systemd-resolved</span><b id="dns-sys-resolved">—</b></div>
+          <div class="kv"><span>/etc/resolv.conf</span><b id="dns-sys-resolv">—</b></div>
+          <div class="kv"><span>NetworkManager</span><b id="dns-sys-nm">—</b></div>
+          <div class="kv"><span>setcap</span><b id="dns-sys-setcap">—</b></div>
+          <div class="kv"><span>Usa BuscaLogo</span><b id="dns-sys-uses">—</b></div>
+        </div>
+      </details>
+      <details>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent)">Corefile</summary>
+        <pre id="dns-corefile" style="margin:8px 0 0;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:11px;line-height:1.5;overflow-x:auto;white-space:pre-wrap;word-break:break-all"></pre>
+      </details>
+    </div>
+    <p class="hint" id="dns-hint"></p>
+    <div class="actions">
+      <button id="dns-enable" class="btn green">Ativar DNS no sistema (Modo B)</button>
+      <button id="dns-disable" class="btn red">Desativar (voltar ao Modo A)</button>
+      <button id="dns-external" class="btn">Abrir para rede Yggdrasil</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TAB: SITES ===== -->
+<div class="tab-panel" id="tab-sites">
+  <div class="card">
+    <div class="card-head"><h2>Sites Hospedados</h2><span id="web-port-badge-2" class="badge">:80</span></div>
+    <p class="hint" id="web-hint"></p>
+    <div class="card-body">
+      <div id="sites-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+        <div class="site-form-row">
+          <input id="site-host" type="text" placeholder="meusite.bl" class="site-input">
+          <select id="site-type" class="site-input">
+            <option value="static">Estático</option>
+            <option value="proxy">Proxy</option>
+          </select>
+        </div>
+        <div class="site-form-row">
+          <input id="site-root" type="text" placeholder="www/meu-site" class="site-input">
+          <input id="site-upstream" type="text" placeholder="http://127.0.0.1:3000" class="site-input" style="display:none">
+          <button id="site-add" class="btn green">Adicionar</button>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="web-enable-80" class="btn" title="Concede cap_net_bind_service (pede senha root)">Ativar porta 80</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TAB: CONFIG ===== -->
+<div class="tab-panel" id="tab-config">
+  <div class="card">
+    <div class="card-head"><h2>Configuração do Nó</h2></div>
+    <div class="card-body form">
+      <label>Nome do nó
+        <input id="cfg-node-name" type="text" placeholder="BuscaLogo Node">
+      </label>
+      <label>Modo Yggdrasil
+        <select id="cfg-ygg-mode">
+          <option value="own">own (binário bundled)</option>
+          <option value="external">external (do sistema)</option>
+        </select>
+      </label>
+      <label>Binário Yggdrasil externo
+        <input id="cfg-ygg-ext" type="text" placeholder="/usr/bin/yggdrasil">
+      </label>
+      <label>Peers Yggdrasil (um por linha)
+        <textarea id="cfg-ygg-peers" rows="4" placeholder="tls://peer.exemplo.com:443"></textarea>
+      </label>
+      <label>DNS upstream (vírgulas)
+        <input id="cfg-dns-upstream" type="text" placeholder="1.1.1.1, 8.8.8.8">
+      </label>
+      <label>TLDs BuscaLogo (vírgulas)
+        <input id="cfg-dns-tlds" type="text" placeholder="bl">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="cfg-save" class="btn green">Salvar configuração</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Inicialização Automática</h2></div>
+    <div class="card-body">
+      <p class="hint" style="padding:0;margin:0 0 12px">Inicie o BuscaLogo Agent automaticamente ao fazer login. Mantém o DNS Modo B, porta 80 e sites disponíveis mesmo após reiniciar o computador.</p>
+      <div class="autostart-row">
+        <span id="autostart-status" class="muted">Status: —</span>
+        <div class="actions" style="padding:0">
+          <button id="autostart-enable" class="btn green">Iniciar com o sistema</button>
+          <button id="autostart-disable" class="btn red">Remover da inicialização</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TAB: LOGS ===== -->
+<div class="tab-panel" id="tab-logs">
+  <div class="card log-card">
+    <div class="card-head">
+      <h2>Logs em tempo real</h2>
+      <div class="log-tools">
+        <select id="log-source"><option value="">todos</option></select>
+        <label class="check"><input type="checkbox" id="log-autoscroll" checked> autoscroll</label>
+        <button id="log-clear" class="btn small">limpar</button>
+      </div>
+    </div>
+    <pre id="log"></pre>
+  </div>
+</div>
+
+</main>
+
+<footer>
+  <span id="version">BuscaLogo Agent</span> &middot; <a href="/api/status" target="_blank">/api/status</a>
+</footer>
+
+<div id="toast" class="toast" style="display:none"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

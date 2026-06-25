@@ -1,0 +1,51 @@
+# BuscaLogo Agent — arquivos locais e gerados
+
+# --- Build Go ---
+/buscalogo-agent
+buscalogo-agent
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+
+# --- Dados em runtime (config, senhas, CouchDB, binários extraídos) ---
+data/
+
+# --- Binários embutidos (make assets / make assets-couchdb) ---
+assets/linux/coredns
+assets/linux/yggdrasil
+assets/linux/couchdb/
+!assets/linux/MANIFEST
+
+# --- Pacotes de distribuição (make dist / make deb) ---
+dist/buscalogo-agent/
+dist/deb/
+dist/*.deb
+dist/*.tar.gz
+
+# --- Logs ---
+*.log
+
+# --- Segredos / ambiente ---
+.env
+.env.*
+!.env.example
+
+# --- Erlang (CouchDB) ---
+erl_crash.dump
+
+# --- Sistema ---
+.DS_Store
+Thumbs.db
+
+# --- Editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Temporários ---
+*.bak
+*.tmp

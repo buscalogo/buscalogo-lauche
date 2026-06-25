@@ -1,0 +1,10 @@
+Package: buscalogo-agent
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: libappindicator3-1 | libayatana-appindicator3-1, libgtk-3-0
+Maintainer: BuscaLogo <contato@buscalogo.com>
+Description: BuscaLogo Agent
+ Agente local para hospedagem de sites .bl, DNS CoreDNS,
+ Yggdrasil e painel web de gerenciamento.

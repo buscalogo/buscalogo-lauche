@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BuscaLogo Agent
+Exec=/opt/buscalogo/buscalogo-agent
+Icon=/opt/buscalogo/buscalogo-agent.png
+Terminal=false
+Comment=BuscaLogo Agent — DNS, Yggdrasil e sites .bl
+Categories=Network;System;

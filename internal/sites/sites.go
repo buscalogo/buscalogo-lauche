@@ -1,0 +1,442 @@
+package sites
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"buscalogo-agent/internal/config"
+	"buscalogo-agent/internal/logx"
+	"buscalogo-agent/internal/paths"
+	"gopkg.in/yaml.v3"
+)
+
+// Site é uma definição de host virtual (.bl) local, combinando config em memória
+// e arquivos em sites/*.yaml (estilo Apache/Nginx sites-available).
+type Site struct {
+	Host     string `yaml:"host" json:"host"`
+	Type     string `yaml:"type" json:"type"` // static | proxy
+	Root     string `yaml:"root" json:"root"` // caminho para arquivos estáticos
+	Upstream string `yaml:"upstream" json:"upstream"` // URL para proxy reverso
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+}
+
+type Manager struct {
+	cfg        *config.Config
+	buf        *logx.Buffer
+	srv        *http.Server
+	mu         sync.RWMutex
+	sites      []Site
+	proxies    map[string]*httputil.ReverseProxy
+	actualPort int
+}
+
+func New(cfg *config.Config, buf *logx.Buffer) *Manager {
+	return &Manager{cfg: cfg, buf: buf, proxies: make(map[string]*httputil.ReverseProxy), actualPort: cfg.Web.Port}
+}
+
+// LoadSites combina sites da config (legado/API) com arquivos sites/*.yaml.
+func (m *Manager) LoadSites() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.loadSitesLocked()
+}
+
+// loadSitesLocked realiza o carregamento assumindo que m.mu já está lockado.
+func (m *Manager) loadSitesLocked() error {
+	var loaded []Site
+
+	// 1. Sites da config
+	for _, s := range m.cfg.Sites {
+		loaded = append(loaded, Site{
+			Host:     s.Host,
+			Type:     s.Type,
+			Root:     s.Root,
+			Upstream: s.Upstream,
+			Enabled:  s.Enabled,
+		})
+	}
+
+	// 2. Arquivos em sites/ (user + system)
+	for _, dir := range m.sitesDirs() {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+				continue
+			}
+			path := filepath.Join(dir, e.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				m.buf.Warnf("sites", "ler %s: %v", e.Name(), err)
+				continue
+			}
+			var s Site
+			if err := yaml.Unmarshal(data, &s); err != nil {
+				m.buf.Warnf("sites", "parse %s: %v", e.Name(), err)
+				continue
+			}
+			// Resolve caminhos relativos a partir do diretório raiz da instalação
+			// (diretório pai de sites/), não do próprio diretório sites/.
+			if s.Root != "" && !filepath.IsAbs(s.Root) {
+				s.Root = filepath.Join(filepath.Dir(dir), s.Root)
+			}
+			loaded = append(loaded, s)
+		}
+	}
+
+	// deduplica por host (último ganha)
+	byHost := make(map[string]Site)
+	for _, s := range loaded {
+		if s.Host == "" {
+			continue
+		}
+		if s.Type == "" {
+			s.Type = "static"
+		}
+		byHost[strings.ToLower(s.Host)] = s
+	}
+
+	m.sites = make([]Site, 0, len(byHost))
+	for _, s := range byHost {
+		m.sites = append(m.sites, s)
+	}
+
+	// reinicia proxies
+	m.proxies = make(map[string]*httputil.ReverseProxy)
+	return nil
+}
+
+func (m *Manager) sitesDirs() []string {
+	var dirs []string
+	// diretório do usuário (home)
+	if home, err := paths.Home(); err == nil {
+		dirs = append(dirs, filepath.Join(home, "sites"))
+	}
+	// diretório do sistema (onde o binário está instalado)
+	if exe, err := os.Executable(); err == nil {
+		if exe, err = filepath.EvalSymlinks(exe); err == nil {
+			dirs = append(dirs, filepath.Join(filepath.Dir(exe), "sites"))
+		}
+	}
+	return dirs
+}
+
+// ResolveRoot converte caminhos relativos (www/...) para absolutos baseados em home.
+func (m *Manager) ResolveRoot(root string) string {
+	if root == "" {
+		return ""
+	}
+	if filepath.IsAbs(root) {
+		return root
+	}
+	home, err := paths.Home()
+	if err != nil {
+		return root
+	}
+	return filepath.Join(home, root)
+}
+
+// Handler roteia por Host: static files ou proxy reverso.
+func (m *Manager) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := hostOnly(r.Host)
+		site := m.findSite(host)
+		if site == nil || !site.Enabled {
+			// Fallback: acesso direto por IP (localhost, Yggdrasil IPv6, LAN).
+			// Serve o primeiro site habilitado para que o agente sempre
+			// responda algo, mesmo antes do DNS resolver .bl.
+			if isIPAddress(host) || isLocalHost(host) {
+				site = m.findDefaultSite()
+			}
+		}
+		if site == nil || !site.Enabled {
+			http.Error(w, "site "+host+" não hospedado neste agente", http.StatusNotFound)
+			return
+		}
+
+		switch site.Type {
+		case "proxy":
+			m.serveProxy(w, r, site)
+		case "static":
+			fallthrough
+		default:
+			m.serveStatic(w, r, site)
+		}
+	})
+}
+
+func (m *Manager) findSite(host string) *Site {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	host = strings.ToLower(host)
+	for i := range m.sites {
+		if strings.EqualFold(m.sites[i].Host, host) {
+			return &m.sites[i]
+		}
+	}
+	return nil
+}
+
+func (m *Manager) serveStatic(w http.ResponseWriter, r *http.Request, site *Site) {
+	root := m.ResolveRoot(site.Root)
+	if root == "" {
+		http.Error(w, "site sem root configurado", http.StatusInternalServerError)
+		return
+	}
+	if _, err := os.Stat(root); err != nil {
+		http.Error(w, "raiz do site indisponível: "+root, http.StatusInternalServerError)
+		return
+	}
+	m.serveSPA(w, r, root)
+}
+
+func (m *Manager) serveProxy(w http.ResponseWriter, r *http.Request, site *Site) {
+	upstream := site.Upstream
+	if upstream == "" {
+		http.Error(w, "site proxy sem upstream", http.StatusInternalServerError)
+		return
+	}
+	m.mu.Lock()
+	proxy, ok := m.proxies[site.Host]
+	if !ok {
+		target, err := url.Parse(upstream)
+		if err != nil {
+			m.mu.Unlock()
+			http.Error(w, "upstream inválido: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		proxy = httputil.NewSingleHostReverseProxy(target)
+		m.proxies[site.Host] = proxy
+	}
+	m.mu.Unlock()
+
+	// ajusta Host para o upstream
+	r.Host = hostOnly(r.Host)
+	proxy.ServeHTTP(w, r)
+}
+
+// serveSPA serve arquivos estáticos com fallback para index.html (rotas client-side).
+func (m *Manager) serveSPA(w http.ResponseWriter, r *http.Request, root string) {
+	fs := http.Dir(root)
+	fsh := http.FileServer(fs)
+
+	upath := r.URL.Path
+	if upath == "/" {
+		upath = "/index.html"
+	}
+	full := filepath.Join(root, filepath.Clean("/"+upath))
+	if fi, err := os.Stat(full); err == nil && !fi.IsDir() {
+		if strings.HasSuffix(upath, ".html") {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		fsh.ServeHTTP(w, r)
+		return
+	}
+
+	idx := filepath.Join(root, "index.html")
+	if _, err := os.Stat(idx); err == nil {
+		r2 := new(http.Request)
+		*r2 = *r
+		r2.URL.Path = "/"
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		fsh.ServeHTTP(w, r2)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func hostOnly(h string) string {
+	// IPv6 com porta: [addr]:port
+	if strings.HasPrefix(h, "[") {
+		if i := strings.Index(h, "]"); i >= 0 {
+			return h[1:i]
+		}
+		return strings.Trim(h, "[]")
+	}
+	// IPv4/domínio com porta
+	if i := strings.LastIndex(h, ":"); i >= 0 {
+		return h[:i]
+	}
+	return h
+}
+
+func isLocalHost(h string) bool {
+	h = hostOnly(h)
+	return h == "127.0.0.1" || h == "::1" || h == "localhost"
+}
+
+// isIPAddress verifica se o host é um endereço IP (IPv4 ou IPv6 sem colchetes).
+func isIPAddress(host string) bool {
+	host = strings.Trim(host, "[]")
+	return net.ParseIP(host) != nil
+}
+
+func (m *Manager) findDefaultSite() *Site {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.sites {
+		if m.sites[i].Enabled {
+			return &m.sites[i]
+		}
+	}
+	return nil
+}
+
+// WriteHostsFile gera data/sites.hosts com cada host -> bind do servidor web.
+func (m *Manager) WriteHostsFile() (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.writeHostsFileLocked()
+}
+
+func (m *Manager) writeHostsFileLocked() (string, error) {
+	path, err := paths.SitesHostsFile()
+	if err != nil {
+		return "", err
+	}
+	addr := m.cfg.Web.Listen
+	if addr == "" {
+		addr = "127.0.0.1"
+	}
+	var b strings.Builder
+	for _, s := range m.sites {
+		if !s.Enabled {
+			continue
+		}
+		h := strings.TrimSpace(s.Host)
+		if h == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s %s\n", addr, h)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// SyncHosts recarrega sites do disco e reescreve o hosts file.
+func (m *Manager) SyncHosts() error {
+	if err := m.LoadSites(); err != nil {
+		return err
+	}
+	_, err := m.WriteHostsFile()
+	return err
+}
+
+func (m *Manager) Start() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.loadSitesLocked(); err != nil {
+		m.buf.Warnf("sites", "falha ao carregar sites: %v", err)
+	}
+	if _, err := m.writeHostsFileLocked(); err != nil {
+		m.buf.Warnf("sites", "falha ao escrever hosts: %v", err)
+	}
+
+	port := m.cfg.Web.Port
+	if port == 0 {
+		port = 80
+	}
+
+	// Quando ExternalListen é true, escuta em [::]:port (dual-stack: cobre
+	// 127.0.0.1, Yggdrasil IPv6 e todas as interfaces). Caso contrário,
+	// apenas em 127.0.0.1:port (local).
+	var addr string
+	if m.cfg.Web.ExternalListen {
+		addr = fmt.Sprintf("[::]:%d", port)
+	} else {
+		addr = fmt.Sprintf("%s:%d", m.cfg.Web.Listen, port)
+	}
+
+	m.srv = &http.Server{
+		Addr:              addr,
+		Handler:           m.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		m.buf.Infof("sites", "tentando servidor web em %s", addr)
+		err := m.srv.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed && isPermissionDenied(err) && port == 80 {
+			fallbackAddr := strings.Replace(addr, ":80", ":8080", 1)
+			m.buf.Warnf("sites", "porta 80 sem permissão; fallback para %s", fallbackAddr)
+			m.mu.Lock()
+			m.actualPort = 8080
+			m.srv = &http.Server{
+				Addr:              fallbackAddr,
+				Handler:           m.Handler(),
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			m.mu.Unlock()
+			if _, err := m.WriteHostsFile(); err != nil {
+				m.buf.Warnf("sites", "falha ao reescrever hosts: %v", err)
+			}
+			if err := m.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				m.buf.Errorf("sites", "servidor web fallback: %v", err)
+			}
+			return
+		}
+		if err != nil && err != http.ErrServerClosed {
+			m.buf.Errorf("sites", "servidor web: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (m *Manager) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.srv == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return m.srv.Shutdown(ctx)
+}
+
+func isPermissionDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	return strings.Contains(err.Error(), "permission denied")
+}
+
+// ActualPort retorna a porta efetiva do servidor web (pode ser fallback 8080).
+func (m *Manager) ActualPort() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.actualPort != 0 {
+		return m.actualPort
+	}
+	if m.cfg.Web.Port != 0 {
+		return m.cfg.Web.Port
+	}
+	return 80
+}
+
+// ListSites expõe as definições carregadas para a API.
+func (m *Manager) ListSites() []Site {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Site, len(m.sites))
+	copy(out, m.sites)
+	return out
+}
