@@ -86,6 +86,13 @@ func emergencyKeyPath() (string, error) {
 }
 
 func adminSocketPath() (string, error) {
+	// Prefer runtime dir: path curto (limite ~108 chars em unix sockets no Linux).
+	if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+		dir := filepath.Join(rd, "buscalogo")
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			return filepath.Join(dir, "yggdrasil.sock"), nil
+		}
+	}
 	data, err := paths.Data()
 	if err != nil {
 		return "", err

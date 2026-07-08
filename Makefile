@@ -11,7 +11,7 @@ COUCH_DEB_URL := https://apache.jfrog.io/artifactory/couchdb-deb/pool/C/CouchDB/
 
 ASSETS_DIR := assets/linux
 
-.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb
+.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb desktop desktop-icons desktop-run desktop-build
 
 all: build
 
@@ -33,10 +33,17 @@ dist: build
 	@cd dist && tar -czf $(APP)-linux-amd64.tar.gz $(APP)
 	@echo ">> Distribuição portátil: dist/$(APP)-linux-amd64.tar.gz"
 
-deb: build
+deb: build desktop-icons
+	@command -v neu >/dev/null || { echo ">> Erro: neu CLI não encontrado (npm i -g @neutralinojs/neu)"; exit 1; }
+	@cp -f $(APP) $(DESKTOP_DIR)/$(DAEMON_BIN)
+	@cd $(DESKTOP_DIR) && neu build --release
 	@rm -rf dist/deb
 	@mkdir -p dist/deb/DEBIAN dist/deb/opt/buscalogo/data/bin dist/deb/usr/local/bin dist/deb/usr/share/applications dist/deb/etc/xdg/autostart
-	@cp $(APP) dist/deb/opt/buscalogo/
+	@cp $(DESKTOP_DIR)/dist/buscalogo-agent/buscalogo-agent-linux_x64 dist/deb/opt/buscalogo/buscalogo-agent
+	@cp $(APP) dist/deb/opt/buscalogo/$(DAEMON_BIN)
+	@cp $(DESKTOP_DIR)/dist/buscalogo-agent/resources.neu dist/deb/opt/buscalogo/
+	@cp $(DESKTOP_DIR)/resources/icons/systrayIcon.png dist/deb/opt/buscalogo/trayIcon.png
+	@cp dist/buscalogo-agent-launch.sh dist/deb/opt/buscalogo/launch.sh
 	@cp -R www dist/deb/opt/buscalogo/
 	@cp -R sites dist/deb/opt/buscalogo/
 	@cp assets/icons/logo.png dist/deb/opt/buscalogo/buscalogo-agent.png
@@ -46,9 +53,10 @@ deb: build
 		rm -rf dist/deb/opt/buscalogo/data/bin/couchdb; \
 		cp -a assets/linux/couchdb dist/deb/opt/buscalogo/data/bin/couchdb; \
 	fi
-	@ln -sf /opt/buscalogo/$(APP) dist/deb/usr/local/bin/$(APP)
-	@cp dist/buscalogo-agent.desktop dist/deb/usr/share/applications/$(APP).desktop
-	@cp dist/buscalogo-agent.desktop dist/deb/etc/xdg/autostart/$(APP).desktop
+	@chmod 755 dist/deb/opt/buscalogo/buscalogo-agent dist/deb/opt/buscalogo/$(DAEMON_BIN) dist/deb/opt/buscalogo/launch.sh
+	@ln -sf /opt/buscalogo/launch.sh dist/deb/usr/local/bin/buscalogo-agent
+	@cp dist/buscalogo-agent.desktop dist/deb/usr/share/applications/buscalogo-agent.desktop
+	@cp dist/buscalogo-agent.desktop dist/deb/etc/xdg/autostart/buscalogo-agent.desktop
 	@cp dist/control dist/deb/DEBIAN/control
 	@cp dist/postinst dist/deb/DEBIAN/postinst
 	@cp dist/postrm dist/deb/DEBIAN/postrm
@@ -98,3 +106,29 @@ tidy:
 clean:
 	rm -f $(APP)
 	rm -rf data/bin/* data/cache/* data/logs/*
+
+DESKTOP_DIR := desktop/buscalogo-desktop
+DESKTOP_ICONS := $(DESKTOP_DIR)/resources/icons
+LOGO_SRC := assets/icons/logo.png
+DAEMON_BIN := buscalogo-agentd
+
+desktop-icons:
+	@mkdir -p $(DESKTOP_ICONS)
+	@command -v convert >/dev/null || { echo ">> Instale imagemagick (convert) para gerar ícones"; exit 1; }
+	convert $(LOGO_SRC) -background none -gravity center -crop 416x416+0+0 +repage -resize 200x200 -strip $(DESKTOP_ICONS)/appIcon.png
+	convert $(LOGO_SRC) -background none -gravity center -crop 416x416+0+0 +repage -filter Lanczos -resize 24x24 -strip $(DESKTOP_ICONS)/trayIcon.png
+	convert $(LOGO_SRC) -background none -gravity center -crop 416x416+0+0 +repage -resize 128x128 -define png:color-type=6 -strip $(DESKTOP_ICONS)/systrayIcon.png
+	@cp -f $(DESKTOP_ICONS)/systrayIcon.png $(DESKTOP_DIR)/trayIcon.png
+	@echo ">> Ícones desktop gerados (appIcon 200px, trayIcon 24px, systrayIcon 128px PNG32)"
+
+# App desktop Neutralinojs (requer `neu` global: npm i -g @neutralinojs/neu)
+desktop-run: build desktop-icons
+	cp -f $(APP) $(DESKTOP_DIR)/$(DAEMON_BIN)
+	cd $(DESKTOP_DIR) && neu run
+
+desktop-build: build desktop-icons
+	cp -f $(APP) $(DESKTOP_DIR)/$(DAEMON_BIN)
+	cd $(DESKTOP_DIR) && neu build --release
+	@cp -f $(APP) $(DESKTOP_DIR)/dist/buscalogo-agent/
+	@cp -f $(DESKTOP_DIR)/resources/icons/systrayIcon.png $(DESKTOP_DIR)/dist/buscalogo-agent/trayIcon.png
+	@echo ">> Desktop: $(DESKTOP_DIR)/dist/buscalogo-agent/"

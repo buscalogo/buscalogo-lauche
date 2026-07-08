@@ -20,6 +20,7 @@ import (
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/logx"
+	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/yggdrasil"
 
@@ -33,6 +34,7 @@ type Tray struct {
 	coredns     *coredns.Service
 	ygg         *yggdrasil.Service
 	couchdb     *couchdb.Service
+	scraper     *scraper.Service
 	sites       *sites.Manager
 	onQuit      func()
 	siteMenusMu      sync.Mutex
@@ -48,8 +50,8 @@ type EnvInfo struct {
 	Details string `json:"details,omitempty"`
 }
 
-func New(panelURL string, buf *logx.Buffer, cfg *config.Config, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, sm *sites.Manager, onQuit func()) *Tray {
-	return &Tray{panelURL: panelURL, buf: buf, cfg: cfg, coredns: cdns, ygg: y, couchdb: cdb, sites: sm, onQuit: onQuit}
+func New(panelURL string, buf *logx.Buffer, cfg *config.Config, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, sm *sites.Manager, onQuit func()) *Tray {
+	return &Tray{panelURL: panelURL, buf: buf, cfg: cfg, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, sites: sm, onQuit: onQuit}
 }
 
 // CheckEnvironment verifica se o ambiente Linux tem suporte a systray/appindicator.

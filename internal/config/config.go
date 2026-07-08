@@ -114,7 +114,16 @@ var DefaultYggdns = []string{
 }
 
 type Scraper struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled              bool     `yaml:"enabled" json:"enabled"`
+	MaxConcurrent        int      `yaml:"max_concurrent" json:"max_concurrent"`
+	MaxDepth             int      `yaml:"max_depth" json:"max_depth"`
+	MaxRetries           int      `yaml:"max_retries" json:"max_retries"`
+	RequestDelayMs       int      `yaml:"request_delay_ms" json:"request_delay_ms"`
+	MaxLinksPerPage      int      `yaml:"max_links_per_page" json:"max_links_per_page"`
+	DiscoverInternalOnly bool     `yaml:"discover_internal_only" json:"discover_internal_only"`
+	DefaultScheduleDays  int      `yaml:"default_schedule_days" json:"default_schedule_days"`
+	BlockedDomains       []string `yaml:"blocked_domains" json:"blocked_domains"`
+	AllowedDomains       []string `yaml:"allowed_domains" json:"allowed_domains"`
 }
 
 type Cache struct {
@@ -150,7 +159,16 @@ func Default() *Config {
 		Sites: []Site{
 			{Host: "buscalogo.bl", Type: "static", Root: defaultBuscaLogoDist(), Enabled: true},
 		},
-		Scraper: Scraper{Enabled: false},
+		Scraper: Scraper{
+			Enabled:              false,
+			MaxConcurrent:        3,
+			MaxDepth:             3,
+			MaxRetries:           3,
+			RequestDelayMs:       2000,
+			MaxLinksPerPage:      100,
+			DiscoverInternalOnly: true,
+			DefaultScheduleDays:  7,
+		},
 		Cache:   Cache{Size: 2048},
 	}}
 }

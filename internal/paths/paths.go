@@ -21,6 +21,22 @@ func isSystemPath(p string) bool {
 	return false
 }
 
+func isDaemonBinary(name string) bool {
+	return name == "buscalogo-agentd" || strings.HasPrefix(name, "buscalogo-agentd")
+}
+
+func userDataHome() (string, error) {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(userHome, ".buscalogo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func homeDir() (string, error) {
 	if v := os.Getenv(envHome); v != "" {
 		if err := os.MkdirAll(v, 0o755); err != nil {
@@ -36,20 +52,34 @@ func homeDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Se o binário está instalado em diretório de sistema (ex: /opt/buscalogo),
-	// guarda dados no home do usuário para evitar problemas de permissão.
-	if isSystemPath(exe) {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dir := filepath.Join(userHome, ".buscalogo")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", err
-		}
-		return dir, nil
+	// Daemon e instalações em /opt usam ~/.buscalogo — evita paths longos
+	// (ex.: unix socket do Yggdrasil) e problemas de permissão em /opt.
+	if isSystemPath(exe) || isDaemonBinary(filepath.Base(exe)) {
+		return userDataHome()
 	}
 	return filepath.Dir(exe), nil
+}
+
+// DaemonExecutable resolves buscalogo-agentd beside the current binary.
+// Falls back to the current executable for legacy single-binary installs.
+func DaemonExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Base(exe)
+	if isDaemonBinary(base) {
+		return exe, nil
+	}
+	cand := filepath.Join(filepath.Dir(exe), "buscalogo-agentd")
+	if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+		return cand, nil
+	}
+	return exe, nil
 }
 
 func sub(name string) (string, error) {

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BuscaLogo Agent</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="splash" class="splash">
+    <img src="/icons/appIcon.png" alt="BuscaLogo" class="logo">
+    <h1>BuscaLogo Agent</h1>
+    <p id="status" class="status">Iniciando serviços…</p>
+    <div class="spinner" aria-hidden="true"></div>
+    <p id="error" class="error" hidden></p>
+    <button id="retry" class="btn" hidden type="button">Tentar novamente</button>
+  </div>
+  <iframe id="panel" class="panel" title="BuscaLogo Agent" hidden></iframe>
+  <script src="/js/neutralino.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+</html>

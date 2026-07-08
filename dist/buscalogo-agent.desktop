@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=BuscaLogo Agent
-Exec=/opt/buscalogo/buscalogo-agent
+Comment=DNS, Yggdrasil, CouchDB e sites .bl — painel nativo
+Exec=/opt/buscalogo/launch.sh
 Icon=/opt/buscalogo/buscalogo-agent.png
 Terminal=false
-Comment=BuscaLogo Agent — DNS, Yggdrasil e sites .bl
 Categories=Network;System;
+StartupWMClass=buscalogo-agent

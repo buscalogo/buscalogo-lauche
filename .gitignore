@@ -49,3 +49,12 @@ Thumbs.db
 # --- Temporários ---
 *.bak
 *.tmp
+
+# --- Neutralino desktop ---
+desktop/buscalogo-desktop/bin/
+desktop/buscalogo-desktop/dist/
+desktop/buscalogo-desktop/.tmp/
+desktop/buscalogo-desktop/resources.neu
+desktop/buscalogo-desktop/neutralinojs.log
+desktop/buscalogo-desktop/buscalogo-agentd
+desktop/buscalogo-desktop/trayIcon.png

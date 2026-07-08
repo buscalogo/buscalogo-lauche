@@ -22,6 +22,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     tab.classList.add("active");
     const panel = document.getElementById("tab-" + tab.dataset.tab);
     if (panel) panel.classList.add("active");
+    if (tab.dataset.tab === "scraper") refreshScraperInfo();
   });
 });
 
@@ -56,13 +57,18 @@ async function copyText(text) {
 }
 
 function updateCard(id, st) {
-  const card = $(" #card-" + id);
+  const card = $("#card-" + id);
   if (!card) return;
-  card.querySelector(".dot").dataset.state = st.state;
-  card.querySelector(".state").textContent = stateLabel(st.state);
-  card.querySelector(".pid").textContent = st.pid || "\u2014";
-  card.querySelector(".uptime").textContent = fmtUptime(st.uptime_seconds);
-  card.querySelector(".restarts").textContent = st.restart_count;
+  const dot = card.querySelector(".dot");
+  if (dot) dot.dataset.state = st.state;
+  const stateEl = card.querySelector(".state");
+  if (stateEl) stateEl.textContent = stateLabel(st.state);
+  const pidEl = card.querySelector(".pid");
+  if (pidEl) pidEl.textContent = st.pid || "\u2014";
+  const uptimeEl = card.querySelector(".uptime");
+  if (uptimeEl) uptimeEl.textContent = fmtUptime(st.uptime_seconds);
+  const restartsEl = card.querySelector(".restarts");
+  if (restartsEl) restartsEl.textContent = st.restart_count;
 }
 
 async function fetchStatus() {
@@ -75,8 +81,11 @@ async function fetchStatus() {
     updateCard("coredns", d.services.coredns);
     updateCard("yggdrasil", d.services.yggdrasil);
     updateCard("couchdb", d.services.couchdb);
+    if (d.services.scraper) updateCard("scraper", d.services.scraper);
     refreshYggdrasilInfo();
     refreshCouchInfo();
+    const scraperTab = document.getElementById("tab-scraper");
+    if (scraperTab?.classList.contains("active")) refreshScraperInfo();
 
     const sys = d.system;
     $("#sys-mode-badge").textContent = d.dns_mode === "system" ? "Modo B" : "Modo A";
@@ -248,6 +257,10 @@ function fillConfig(c) {
   $("#cfg-ygg-peers").value = (c.yggdrasil?.peers || []).join("\n");
   $("#cfg-dns-upstream").value = (c.dns?.upstream || []).join(", ");
   $("#cfg-dns-tlds").value = (c.dns?.search_domains || []).join(", ");
+  $("#cfg-scraper-enabled").checked = c.scraper?.enabled === true;
+  $("#cfg-scraper-concurrent").value = c.scraper?.max_concurrent || 3;
+  $("#cfg-scraper-depth").value = c.scraper?.max_depth || 3;
+  $("#cfg-scraper-schedule").value = c.scraper?.default_schedule_days ?? 7;
 }
 
 function renderSystrayWarning(info) {
@@ -284,6 +297,101 @@ async function regenerateCouchPassword() {
     toast("Erro: " + (e.message || e), 4000);
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+async function refreshScraperInfo() {
+  try {
+    const [infoR, statsR, tasksR, resultsR] = await Promise.all([
+      fetch("/api/scraper/info"),
+      fetch("/api/scraper/stats"),
+      fetch("/api/scraper/tasks"),
+      fetch("/api/scraper/results?limit=10"),
+    ]);
+    const info = (await infoR.json()).info || {};
+    const stats = (await statsR.json()).data || {};
+    const tasks = (await tasksR.json()).data || {};
+    const results = (await resultsR.json()).data || [];
+
+    const queueEl = $("#scraper-queue");
+    const processedEl = $("#scraper-processed");
+    const dbEl = $("#scraper-couch-mode");
+    if (dbEl) dbEl.textContent = info.database ? `CouchDB / ${info.database}` : "CouchDB";
+    const q = stats.queues || {};
+    const queued = (q.high || 0) + (q.normal || 0) + (q.low || 0) + (q.discovered || 0);
+    if (queueEl) queueEl.textContent = info.running ? `${queued} na fila, ${stats.active || 0} ativa(s)` : "parado";
+    if (processedEl) processedEl.textContent = stats.metrics?.total_processed ?? "0";
+
+    const activeEl = $("#scraper-active-count");
+    const queuedEl = $("#scraper-queued-count");
+    if (activeEl) activeEl.textContent = stats.active ?? (tasks.active || []).length;
+    if (queuedEl) queuedEl.textContent = queued;
+    const successEl = $("#scraper-success-count");
+    const failedEl = $("#scraper-failed-count");
+    const linksEl = $("#scraper-links-count");
+    const avgEl = $("#scraper-avg-time");
+    const m = stats.metrics || {};
+    if (successEl) successEl.textContent = m.successful ?? 0;
+    if (failedEl) failedEl.textContent = m.failed ?? 0;
+    if (linksEl) linksEl.textContent = m.links_discovered ?? 0;
+    if (avgEl) {
+      const ms = m.avg_processing_time_ms;
+      avgEl.textContent = ms > 0 ? `${Math.round(ms)} ms` : "—";
+    }
+
+    const listEl = $("#scraper-results");
+    if (listEl) {
+      if (!results.length) {
+        listEl.innerHTML = '<span class="muted">Nenhum resultado ainda.</span>';
+      } else {
+        listEl.innerHTML = results.map(r => {
+          const title = escapeHtml(r.title || r.url || r._id || "?");
+          const host = escapeHtml(r.hostname || "");
+          return `<div class="scraper-result-row"><a href="${escapeHtml(r.url || "#")}" target="_blank" rel="noopener">${title}</a><span class="muted">${host}</span></div>`;
+        }).join("");
+      }
+    }
+  } catch {
+    const queueEl = $("#scraper-queue");
+    if (queueEl) queueEl.textContent = "erro";
+  }
+}
+
+async function addScraperURL() {
+  const url = $("#scraper-url-input")?.value?.trim();
+  if (!url) { toast("Informe uma URL"); return; }
+  const priority = $("#scraper-priority")?.value || "normal";
+  const btn = $("#scraper-add-url");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/scraper/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, priority }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || d.message || "falha");
+    toast("URL enfileirada!");
+    $("#scraper-url-input").value = "";
+    refreshScraperInfo();
+    fetchStatus();
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function clearScraperQueue() {
+  if (!confirm("Limpar todas as tarefas na fila?")) return;
+  try {
+    const r = await fetch("/api/scraper/clear", { method: "POST" });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || "falha");
+    toast("Fila limpa");
+    refreshScraperInfo();
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
   }
 }
 
@@ -580,6 +688,13 @@ async function saveConfig() {
     upstream: $("#cfg-dns-upstream").value.split(",").map(s=>s.trim()).filter(Boolean),
     search_domains: $("#cfg-dns-tlds").value.split(",").map(s=>s.trim()).filter(Boolean),
   };
+  cfg.scraper = {
+    ...cfg.scraper,
+    enabled: $("#cfg-scraper-enabled").checked,
+    max_concurrent: parseInt($("#cfg-scraper-concurrent").value, 10) || 3,
+    max_depth: parseInt($("#cfg-scraper-depth").value, 10) || 3,
+    default_schedule_days: parseInt($("#cfg-scraper-schedule").value, 10),
+  };
   const r = await fetch("/api/config", { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(cfg) });
   return r.ok;
 }
@@ -739,7 +854,20 @@ document.addEventListener("click", (ev) => {
   }
   if (ev.target.id === "site-add") addSite();
   if (ev.target.id === "web-enable-80") doWebEnable80();
-  if (ev.target.id === "autostart-enable") doAutostart(true);
+  if (ev.target.id === "scraper-add-url") addScraperURL();
+  if (ev.target.id === "scraper-clear-queue") clearScraperQueue();
+  if (ev.target.id === "scraper-refresh-results") refreshScraperInfo();
+  if (ev.target.id === "scraper-cfg-save") {
+    saveConfig().then(ok => {
+      const btn = $("#scraper-cfg-save");
+      const orig = btn.textContent;
+      btn.textContent = ok ? "salvo \u2713" : "erro \u2717";
+      btn.style.color = ok ? "var(--green)" : "var(--red)";
+      if (ok) toast("Configura\u00e7\u00e3o do scraper salva!");
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ""; }, 1500);
+      fetchStatus();
+    });
+  }
   if (ev.target.id === "autostart-disable") doAutostart(false);
 });
 

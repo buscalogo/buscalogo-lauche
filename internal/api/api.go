@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,6 +20,8 @@ import (
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/dns"
 	"buscalogo-agent/internal/logx"
+	"buscalogo-agent/internal/paths"
+	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/system"
 	"buscalogo-agent/internal/tray"
@@ -31,18 +35,19 @@ type Server struct {
 	coredns *coredns.Service
 	ygg     *yggdrasil.Service
 	couchdb *couchdb.Service
+	scraper *scraper.Service
 	dns     *dns.Manager
 	sites   *sites.Manager
 	srv     *http.Server
 }
 
-func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, d *dns.Manager, sm *sites.Manager) *Server {
-	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, dns: d, sites: sm}
+func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, d *dns.Manager, sm *sites.Manager) *Server {
+	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, dns: d, sites: sm}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	s.srv = &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           s.hostGuard(mux),
+		Handler:           s.hostGuard(s.corsLocal(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return s
@@ -68,6 +73,39 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
+// corsLocal permite requisições do shell Neutralino (origem localhost em outra porta).
+func (s *Server) corsLocal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); isLocalOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLocalOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("POST /api/service/{name}/{action}", s.handleService)
@@ -86,6 +124,18 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/yggdrasil/identity", s.handleYggImportIdentity)
 	mux.HandleFunc("GET /api/couchdb/info", s.handleCouchInfo)
 	mux.HandleFunc("POST /api/couchdb/regenerate-password", s.handleCouchRegeneratePassword)
+	mux.HandleFunc("GET /api/scraper/info", s.handleScraperInfo)
+	mux.HandleFunc("GET /api/scraper/tasks", s.handleScraperTasks)
+	mux.HandleFunc("POST /api/scraper/tasks", s.handleScraperAddTask)
+	mux.HandleFunc("POST /api/scraper/batch", s.handleScraperBatch)
+	mux.HandleFunc("GET /api/scraper/stats", s.handleScraperStats)
+	mux.HandleFunc("GET /api/scraper/config", s.handleScraperGetConfig)
+	mux.HandleFunc("POST /api/scraper/config", s.handleScraperSetConfig)
+	mux.HandleFunc("POST /api/scraper/start", s.handleScraperStart)
+	mux.HandleFunc("POST /api/scraper/stop", s.handleScraperStop)
+	mux.HandleFunc("POST /api/scraper/clear", s.handleScraperClear)
+	mux.HandleFunc("GET /api/scraper/results", s.handleScraperResults)
+	mux.HandleFunc("DELETE /api/scraper/results/{docId}", s.handleScraperDeleteResult)
 	mux.HandleFunc("GET /api/sites", s.handleSitesList)
 	mux.HandleFunc("POST /api/sites", s.handleSitesAdd)
 	mux.HandleFunc("DELETE /api/sites/{host}", s.handleSitesDelete)
@@ -93,6 +143,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/autostart", s.handleGetAutostart)
 	mux.HandleFunc("POST /api/autostart/enable", s.handleAutostartEnable)
 	mux.HandleFunc("POST /api/autostart/disable", s.handleAutostartDisable)
+	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
 	mux.Handle("/", frontend.Handler())
 }
 
@@ -141,6 +192,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"coredns":   s.coredns.Status(),
 			"yggdrasil": s.ygg.Status(),
 			"couchdb":   s.couchdb.Status(),
+			"scraper":   s.scraper.Status(),
 		},
 		System:   dns.Detect(s.cfg),
 		Web: webInfo{
@@ -169,6 +221,8 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		err = s.applyAction(action, s.ygg.Start, s.ygg.Stop, s.ygg.Restart)
 	case "couchdb":
 		err = s.applyAction(action, s.couchdb.Start, s.couchdb.Stop, s.couchdb.Restart)
+	case "scraper":
+		err = s.applyAction(action, s.scraper.Start, s.scraper.Stop, s.scraper.Restart)
 	default:
 		writeErr(w, http.StatusBadRequest, "serviço desconhecido: %s", name)
 		return
@@ -178,8 +232,174 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "services": map[string]any{
-		"coredns": s.coredns.Status(), "yggdrasil": s.ygg.Status(), "couchdb": s.couchdb.Status(),
+		"coredns": s.coredns.Status(), "yggdrasil": s.ygg.Status(), "couchdb": s.couchdb.Status(), "scraper": s.scraper.Status(),
 	}})
+}
+
+func (s *Server) handleScraperInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "info": s.scraper.Info()})
+}
+
+func (s *Server) handleScraperTasks(w http.ResponseWriter, r *http.Request) {
+	active, queued := s.scraper.Engine().TasksSnapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"active": active,
+			"queued": queued,
+			"total":  len(active) + len(queued),
+		},
+	})
+}
+
+func (s *Server) handleScraperAddTask(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL            string `json:"url"`
+		Priority       string `json:"priority"`
+		DiscoveredFrom string `json:"discoveredFrom"`
+		Depth          int    `json:"depth"`
+		MaxDepth       int    `json:"maxDepth"`
+		Type           string `json:"type"`
+		ScheduleDays   int    `json:"scheduleDays"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+	if strings.TrimSpace(body.URL) == "" {
+		writeErr(w, http.StatusBadRequest, "URL é obrigatória")
+		return
+	}
+	taskID, err := s.scraper.AddTask(body.URL, body.Priority, body.Depth, body.MaxDepth, body.ScheduleDays, body.DiscoveredFrom, body.Type)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"success": true,
+		"message": "Tarefa adicionada à fila",
+		"data": map[string]any{
+			"taskId": taskID, "url": body.URL, "priority": body.Priority,
+			"scheduleDays": body.ScheduleDays, "maxDepth": body.MaxDepth,
+		},
+	})
+}
+
+func (s *Server) handleScraperBatch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URLs         []string `json:"urls"`
+		Priority     string   `json:"priority"`
+		MaxDepth     int      `json:"maxDepth"`
+		ScheduleDays int      `json:"scheduleDays"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+	added := 0
+	var ids []string
+	for _, u := range body.URLs {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		id, err := s.scraper.AddTask(u, body.Priority, 0, body.MaxDepth, body.ScheduleDays, "", "batch")
+		if err != nil {
+			continue
+		}
+		if id != "" {
+			added++
+			ids = append(ids, id)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("%d URL(s) adicionada(s)", added),
+		"data":    map[string]any{"taskIds": ids, "added": added},
+	})
+}
+
+func (s *Server) handleScraperStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    s.scraper.Engine().Stats(),
+	})
+}
+
+func (s *Server) handleScraperGetConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    s.scraper.ConfigMap(),
+	})
+}
+
+func (s *Server) handleScraperSetConfig(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+	if err := s.scraper.ApplyConfig(body); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    s.scraper.ConfigMap(),
+	})
+}
+
+func (s *Server) handleScraperStart(w http.ResponseWriter, r *http.Request) {
+	if err := s.scraper.Start(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Scraper iniciado"})
+}
+
+func (s *Server) handleScraperStop(w http.ResponseWriter, r *http.Request) {
+	if err := s.scraper.Stop(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Scraper parado"})
+}
+
+func (s *Server) handleScraperClear(w http.ResponseWriter, r *http.Request) {
+	s.scraper.Engine().ClearQueue()
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Fila limpa"})
+}
+
+func (s *Server) handleScraperResults(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	results, err := s.scraper.ListResults(limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    results,
+		"total":   len(results),
+	})
+}
+
+func (s *Server) handleScraperDeleteResult(w http.ResponseWriter, r *http.Request) {
+	docID := r.PathValue("docId")
+	if docID == "" {
+		writeErr(w, http.StatusBadRequest, "docId obrigatório")
+		return
+	}
+	if err := s.scraper.DeleteResult(docID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Resultado removido"})
 }
 
 func (s *Server) handleCouchInfo(w http.ResponseWriter, r *http.Request) {
@@ -515,12 +735,12 @@ func (s *Server) handleSitesDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWebEnable80(w http.ResponseWriter, r *http.Request) {
-	exe, err := os.Executable()
+	daemon, err := paths.DaemonExecutable()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "descobrir executável: %v", err)
 		return
 	}
-	if err := system.SetCapNetBindService(s.buf, exe); err != nil {
+	if err := system.SetCapNetBindService(s.buf, daemon); err != nil {
 		writeErr(w, http.StatusInternalServerError, "setcap cap_net_bind_service: %v", err)
 		return
 	}
@@ -528,7 +748,7 @@ func (s *Server) handleWebEnable80(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"message": "cap_net_bind_service concedido ao agente. Reiniciando para usar a porta 80...",
 	})
-	go s.restartAgent(exe)
+	go s.restartAgent(daemon)
 }
 
 func (s *Server) handleGetAutostart(w http.ResponseWriter, r *http.Request) {
@@ -554,24 +774,54 @@ func (s *Server) handleAutostartDisable(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": false})
 }
 
-// restartAgent para serviços e reexecuta o binário com os mesmos argumentos.
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	go s.stopAllAndExit()
+}
+
+func (s *Server) stopAllAndExit() {
+	time.Sleep(100 * time.Millisecond)
+	s.buf.Infof("api", "encerrando serviços (solicitação de shutdown)")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	_ = s.Shutdown(ctx)
+	_ = s.sites.Stop()
+	_ = s.coredns.Stop()
+	_ = s.couchdb.Stop()
+	_ = s.scraper.Stop()
+	_ = s.ygg.Stop()
+	s.buf.Infof("api", "encerrado")
+	os.Exit(0)
+}
+
+// restartAgent para serviços e reexecuta buscalogo-agentd (--no-tray).
 // Usado após setcap para que o novo processo carregue a capability concedida.
-func (s *Server) restartAgent(exe string) {
+func (s *Server) restartAgent(daemon string) {
 	s.buf.Infof("api", "reiniciando agente em 1s para carregar cap_net_bind_service")
 	time.Sleep(1 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = s.coredns.Stop()
 	_ = s.couchdb.Stop()
+	_ = s.scraper.Stop()
 	_ = s.ygg.Stop()
 	_ = s.sites.Stop()
 	_ = s.Shutdown(ctx)
-	// Re-executa o mesmo binário com os mesmos argumentos/ambiente.
-	// O novo processo herdará as capabilities do arquivo executável.
-	s.buf.Infof("api", "re-executando %s %v", exe, os.Args)
-	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
-		// Falha crítica: processo não pode continuar sem a capability.
+	args := daemonArgs(daemon)
+	s.buf.Infof("api", "re-executando %s %v", daemon, args[1:])
+	if err := syscall.Exec(daemon, args, os.Environ()); err != nil {
 		s.buf.Errorf("api", "falha ao re-executar agente: %v", err)
 		os.Exit(1)
 	}
+}
+
+func daemonArgs(daemon string) []string {
+	base := filepath.Base(daemon)
+	if base == "buscalogo-agentd" {
+		return []string{daemon, "--no-tray"}
+	}
+	if len(os.Args) > 0 && os.Args[0] == daemon {
+		return os.Args
+	}
+	return append([]string{daemon}, os.Args[1:]...)
 }

@@ -577,11 +577,147 @@ func (s *Service) credentialFilePath() string {
 	return filepath.Join(dir, "admin.password")
 }
 
+// ConnectionURL retorna a URL HTTP do CouchDB com credenciais (para PouchDB remoto).
+func (s *Service) ConnectionURL() (string, error) {
+	user := strings.TrimSpace(s.cfg.CouchDB.AdminUser)
+	pass := s.cfg.CouchDB.AdminPassword
+	host := s.cfg.CouchDB.Listen
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := s.cfg.CouchDB.Port
+	if port == 0 {
+		port = 5984
+	}
+	if user != "" && pass != "" {
+		return fmt.Sprintf("http://%s:%s@%s:%d", user, pass, host, port), nil
+	}
+	return fmt.Sprintf("http://%s:%d", host, port), nil
+}
+
 // Ping verifica conectividade (útil para testes).
 func (s *Service) Ping() error {
 	client := s.httpClient()
 	if !s.Reachable(client) {
 		return fmt.Errorf("couchdb não responde em %s", s.BaseURL())
+	}
+	return nil
+}
+
+// DocRow é um documento retornado por ListDocs.
+type DocRow struct {
+	ID  string          `json:"id"`
+	Rev string          `json:"rev"`
+	Doc json.RawMessage `json:"doc"`
+}
+
+// GetDoc lê um documento pelo ID (_rev vazio se não existir).
+func (s *Service) GetDoc(db, docID string) ([]byte, string, error) {
+	client := s.httpClient()
+	url := s.BaseURL() + "/" + db + "/" + docID
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", fmt.Errorf("not found")
+	}
+	if resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("GET %s: HTTP %d %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body, "", nil
+	}
+	rev := ""
+	if r, ok := doc["_rev"]; ok {
+		_ = json.Unmarshal(r, &rev)
+		delete(doc, "_rev")
+	}
+	delete(doc, "_id")
+	out, err := json.Marshal(doc)
+	return out, rev, err
+}
+
+// ListDocs lista documentos por intervalo de _id (startkey/endkey).
+func (s *Service) ListDocs(db, startKey, endKey string, limit int) ([]DocRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	client := s.httpClient()
+	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&limit=%d", s.BaseURL(), db, limit)
+	if startKey != "" {
+		u += "&startkey=" + jsonKey(startKey) + "&endkey=" + jsonKey(endKey)
+	}
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET %s: HTTP %d %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var parsed struct {
+		Rows []struct {
+			ID    string          `json:"id"`
+			Key   string          `json:"key"`
+			Value struct {
+				Rev string `json:"rev"`
+			} `json:"value"`
+			Doc json.RawMessage `json:"doc"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	out := make([]DocRow, 0, len(parsed.Rows))
+	for _, row := range parsed.Rows {
+		if strings.HasPrefix(row.ID, "_") {
+			continue
+		}
+		out = append(out, DocRow{ID: row.ID, Rev: row.Value.Rev, Doc: row.Doc})
+	}
+	return out, nil
+}
+
+func jsonKey(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// DeleteDoc remove um documento pelo ID e rev.
+func (s *Service) DeleteDoc(db, docID, rev string) error {
+	client := s.httpClient()
+	url := s.BaseURL() + "/" + db + "/" + docID
+	if rev != "" {
+		url += "?rev=" + rev
+	}
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("DELETE %s: HTTP %d %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }

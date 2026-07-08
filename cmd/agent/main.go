@@ -16,6 +16,7 @@ import (
 	"buscalogo-agent/internal/dns"
 	"buscalogo-agent/internal/logx"
 	"buscalogo-agent/internal/paths"
+	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/tray"
 	"buscalogo-agent/internal/yggdrasil"
@@ -55,6 +56,7 @@ func main() {
 		couchListen = "127.0.0.1"
 	}
 	log.Printf("CouchDB: http://%s:%d (modo=%s)", couchListen, couchPort, cfg.CouchDB.Mode)
+	log.Printf("Scraper: nativo Go → CouchDB/%s (enabled=%v)", "buscalogo_scraping", cfg.Scraper.Enabled)
 
 	buf.Infof("agent", "BuscaLogo Agent iniciando (home=%s)", home)
 	buf.Infof("agent", "API painel: http://%s", cfg.API.Listen)
@@ -62,13 +64,15 @@ func main() {
 	buf.Infof("agent", "Web sites: %s:%d (fallback 8080 se sem permissão)", cfg.Web.Listen, webPort)
 	buf.Infof("agent", "Yggdrasil modo=%s", cfg.Yggdrasil.Mode)
 	buf.Infof("agent", "CouchDB: http://%s:%d (modo=%s)", couchListen, couchPort, cfg.CouchDB.Mode)
+	buf.Infof("agent", "Scraper: nativo Go → CouchDB/buscalogo_scraping (enabled=%v)", cfg.Scraper.Enabled)
 
 	cdns := coredns.New(cfg, buf)
 	ygg := yggdrasil.New(cfg, buf)
 	cdb := couchdb.New(cfg, buf)
+	scr := scraper.New(cfg, cdb, buf)
 	dnsMgr := dns.NewManager(cfg, buf, cdns)
 	sitesMgr := sites.New(cfg, buf)
-	srv := api.New(cfg, buf, cdns, ygg, cdb, dnsMgr, sitesMgr)
+	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, dnsMgr, sitesMgr)
 
 	// Garante o hosts file dos sites ANTES de gerar o Corefile do CoreDNS.
 	if err := sitesMgr.SyncHosts(); err != nil {
@@ -87,6 +91,7 @@ func main() {
 	startService("Yggdrasil", cfg.Yggdrasil.Enabled, ygg.Start)
 	startService("CoreDNS", cfg.DNS.Enabled, cdns.Start)
 	startService("CouchDB", cfg.CouchDB.Enabled, cdb.Start)
+	startService("Scraper", cfg.Scraper.Enabled, scr.Start)
 	if err := sitesMgr.Start(); err != nil {
 		buf.Errorf("agent", "servidor de sites: %v", err)
 	}
@@ -110,6 +115,7 @@ func main() {
 		_ = sitesMgr.Stop()
 		_ = cdns.Stop()
 		_ = cdb.Stop()
+		_ = scr.Stop()
 		_ = ygg.Stop()
 		buf.Infof("agent", "encerrado")
 	}
@@ -133,6 +139,6 @@ func main() {
 		buf.Warnf("agent", "systray ajuda: %s", env.Details)
 	}
 
-	tray.New(panelURL, buf, cfg, cdns, ygg, cdb, sitesMgr, nil).Run()
+	tray.New(panelURL, buf, cfg, cdns, ygg, cdb, scr, sitesMgr, nil).Run()
 	shutdown()
 }

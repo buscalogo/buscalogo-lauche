@@ -32,6 +32,7 @@
   <button class="tab" data-tab="network">Rede</button>
   <button class="tab" data-tab="dns">DNS</button>
   <button class="tab" data-tab="sites">Sites</button>
+  <button class="tab" data-tab="scraper">Scraper</button>
   <button class="tab" data-tab="config">Configurações</button>
   <button class="tab" data-tab="logs">Logs</button>
 </nav>
@@ -296,6 +297,111 @@
     </div>
     <div class="actions">
       <button id="web-enable-80" class="btn" title="Concede cap_net_bind_service (pede senha root)">Ativar porta 80</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TAB: SCRAPER ===== -->
+<div class="tab-panel" id="tab-scraper">
+  <div class="grid two scraper-top">
+    <div class="card" id="card-scraper">
+      <div class="card-head">
+        <h2>Motor de raspagem</h2>
+        <span class="dot" data-state="stopped"></span>
+      </div>
+      <div class="card-body">
+        <div class="kv"><span>Estado</span><b class="state">—</b></div>
+        <div class="kv"><span>Uptime</span><b class="uptime">—</b></div>
+        <div class="kv"><span>Fila</span><b id="scraper-queue">—</b></div>
+        <div class="kv"><span>Processadas</span><b id="scraper-processed">—</b></div>
+        <div class="kv"><span>Banco</span><b id="scraper-couch-mode">CouchDB</b></div>
+      </div>
+      <div class="card-footer">
+        <div class="actions">
+          <button data-svc="scraper" data-act="start" class="btn green">Iniciar</button>
+          <button data-svc="scraper" data-act="stop" class="btn red">Parar</button>
+          <button data-svc="scraper" data-act="restart" class="btn">Reiniciar</button>
+          <button id="scraper-clear-queue" class="btn">Limpar fila</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Métricas</h2></div>
+      <div class="card-body grid two">
+        <div class="stat-card">
+          <span class="stat-label">Ativas</span>
+          <span id="scraper-active-count" class="stat-value">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Na fila</span>
+          <span id="scraper-queued-count" class="stat-value">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Sucesso</span>
+          <span id="scraper-success-count" class="stat-value">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Falhas</span>
+          <span id="scraper-failed-count" class="stat-value">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Links descobertos</span>
+          <span id="scraper-links-count" class="stat-value">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Tempo médio</span>
+          <span id="scraper-avg-time" class="stat-value">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="card-scraping-panel">
+    <div class="card-head"><h2>Nova raspagem</h2></div>
+    <div class="card-body">
+      <div class="scraping-add">
+        <input id="scraper-url-input" type="url" placeholder="https://exemplo.com" class="wide">
+        <select id="scraper-priority">
+          <option value="high">alta</option>
+          <option value="normal" selected>normal</option>
+          <option value="low">baixa</option>
+        </select>
+        <button id="scraper-add-url" class="btn green">Raspar</button>
+      </div>
+      <p class="hint" style="margin:8px 0 0">Resultados em <code>buscalogo_scraping</code> no CouchDB (compatível PouchDB).</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Resultados recentes</h2>
+      <button id="scraper-refresh-results" class="btn small" type="button">Atualizar</button>
+    </div>
+    <div class="card-body">
+      <div id="scraper-results" class="scraper-results muted">Nenhum resultado ainda.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Configuração</h2></div>
+    <div class="card-body form">
+      <label class="checkbox-row">
+        <input id="cfg-scraper-enabled" type="checkbox">
+        Iniciar scraper automaticamente com o agente
+      </label>
+      <label>Concorrência máxima
+        <input id="cfg-scraper-concurrent" type="number" min="1" max="20" placeholder="3">
+      </label>
+      <label>Profundidade máxima (crawl)
+        <input id="cfg-scraper-depth" type="number" min="1" max="5" placeholder="3">
+      </label>
+      <label>Re-verificação padrão (dias, 0=desligado)
+        <input id="cfg-scraper-schedule" type="number" min="0" max="365" placeholder="7">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="scraper-cfg-save" class="btn green">Salvar configuração</button>
     </div>
   </div>
 </div>

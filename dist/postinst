@@ -3,13 +3,21 @@ set -e
 DIR=/opt/buscalogo
 if [ "$1" = "configure" ]; then
     if command -v setcap >/dev/null 2>&1; then
-        setcap cap_net_bind_service=+ep "$DIR/buscalogo-agent" || true
+        setcap cap_net_bind_service=+ep "$DIR/buscalogo-agentd" || true
         setcap cap_net_bind_service=+ep "$DIR/data/bin/coredns" || true
         setcap cap_net_admin,cap_net_raw=+ep "$DIR/data/bin/yggdrasil" || true
     fi
     if [ -d "$DIR/data/bin/couchdb/bin" ]; then
         chmod -R a+rX "$DIR/data/bin/couchdb"
     fi
+    chmod 0755 "$DIR/buscalogo-agent" "$DIR/buscalogo-agentd" 2>/dev/null || true
     chmod 0755 "$DIR/data/bin/coredns" "$DIR/data/bin/yggdrasil" 2>/dev/null || true
+    chmod 0755 "$DIR/launch.sh" 2>/dev/null || true
+    if [ -f "$DIR/resources/icons/systrayIcon.png" ]; then
+        cp "$DIR/resources/icons/systrayIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
+    elif [ -f "$DIR/resources/icons/appIcon.png" ]; then
+        cp "$DIR/resources/icons/appIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
+    fi
+    chmod 0644 "$DIR/trayIcon.png" 2>/dev/null || true
 fi
 #DEBHELPER#
