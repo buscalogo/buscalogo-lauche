@@ -20,6 +20,7 @@ import (
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/dns"
 	"buscalogo-agent/internal/logx"
+	"buscalogo-agent/internal/openurl"
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
@@ -139,6 +140,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sites", s.handleSitesList)
 	mux.HandleFunc("POST /api/sites", s.handleSitesAdd)
 	mux.HandleFunc("DELETE /api/sites/{host}", s.handleSitesDelete)
+	mux.HandleFunc("POST /api/open-url", s.handleOpenURL)
 	mux.HandleFunc("POST /api/web/enable-80", s.handleWebEnable80)
 	mux.HandleFunc("GET /api/autostart", s.handleGetAutostart)
 	mux.HandleFunc("POST /api/autostart/enable", s.handleAutostartEnable)
@@ -732,6 +734,22 @@ func (s *Server) handleSitesDelete(w http.ResponseWriter, r *http.Request) {
 		s.buf.Warnf("api", "sync hosts: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sites": s.sites.ListSites()})
+}
+
+func (s *Server) handleOpenURL(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.URL == "" {
+		writeErr(w, http.StatusBadRequest, "url é obrigatória")
+		return
+	}
+	if err := openurl.Open(body.URL); err != nil {
+		writeErr(w, http.StatusBadRequest, "abrir url: %v", err)
+		return
+	}
+	s.buf.Infof("api", "abrindo no navegador: %s", body.URL)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleWebEnable80(w http.ResponseWriter, r *http.Request) {

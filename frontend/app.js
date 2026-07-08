@@ -479,6 +479,25 @@ function renderPeers(peers) {
   });
 }
 
+async function openExternal(url) {
+  try {
+    const r = await fetch("/api/open-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      toast("Erro ao abrir: " + (e.error || "falha"), 3000);
+      return false;
+    }
+    return true;
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return true;
+  }
+}
+
 async function renderSites() {
   try {
     const r = await fetch("/api/sites");
@@ -491,21 +510,25 @@ async function renderSites() {
     }
     sites.forEach(s => {
       const row = document.createElement("div");
-      row.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border-radius:8px;font-size:13px";
+      row.className = "site-row" + (s.enabled ? " site-row-open" : "");
       const detail = s.type === "proxy" ? (s.upstream || "proxy") : (s.root || "static");
       const linkUrl = siteUrl(s.host, currentWebPort, currentDNSMode);
-      const linkBtn = s.enabled
-        ? `<a href="${escapeAttr(linkUrl)}" target="_blank" rel="noopener" class="btn small" style="text-decoration:none">abrir</a>`
-        : `<span class="btn small" style="opacity:0.5;cursor:not-allowed">abrir</span>`;
       row.innerHTML = `
-        <a href="${s.enabled ? escapeAttr(linkUrl) : '#'}" target="${s.enabled ? '_blank' : ''}" rel="noopener" style="flex:1;font-weight:600;color:${s.enabled ? "var(--green)" : "var(--muted)"};text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(linkUrl)}">${escapeHtml(s.host)}</a>
-        <span style="color:var(--amber);font-size:11px;text-transform:uppercase">${escapeHtml(s.type || "static")}</span>
-        <span style="flex:2;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(detail)}</span>
-        <span style="color:var(--muted);font-size:11px">${s.enabled ? "ativo" : "inativo"}</span>
-        ${linkBtn}
-        <button class="btn small red" data-site-del="${escapeAttr(s.host)}">remover</button>
+        <button type="button" class="site-host${s.enabled ? "" : " disabled"}" data-site-open="${escapeAttr(linkUrl)}" title="${escapeAttr(linkUrl)}" ${s.enabled ? "" : "disabled"}>${escapeHtml(s.host)}</button>
+        <span class="site-type">${escapeHtml(s.type || "static")}</span>
+        <span class="site-detail">${escapeHtml(detail)}</span>
+        <span class="site-status">${s.enabled ? "ativo" : "inativo"}</span>
+        <button type="button" class="btn small site-open-btn" data-site-open="${escapeAttr(linkUrl)}" ${s.enabled ? "" : "disabled"}>abrir</button>
+        <button type="button" class="btn small red" data-site-del="${escapeAttr(s.host)}">remover</button>
       `;
       $("#sites-list").appendChild(row);
+    });
+    $("#sites-list").querySelectorAll("[data-site-open]").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (btn.disabled) return;
+        await openExternal(btn.dataset.siteOpen);
+      });
     });
     $("#sites-list").querySelectorAll("button[data-site-del]").forEach(btn => {
       btn.addEventListener("click", () => deleteSite(btn.dataset.siteDel));
@@ -592,8 +615,10 @@ async function toggleDNSExternal() {
 function siteUrl(host, port, dnsMode) {
   const h = host.replace(/:\d+$/, "");
   const useHost = dnsMode === "system" ? h : "127.0.0.1";
-  if (port === 80 || port === 0) return "http://" + useHost + "/";
-  return "http://" + useHost + ":" + port + "/";
+  const base = port === 80 || port === 0
+    ? `http://${useHost}/`
+    : `http://${useHost}:${port}/`;
+  return base;
 }
 
 async function addSite() {

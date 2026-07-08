@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"buscalogo-agent/assets"
+	"buscalogo-agent/internal/openurl"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
@@ -162,7 +163,7 @@ func (t *Tray) onReady() {
 		for {
 			select {
 			case <-mOpen.ClickedCh:
-				openBrowser(t.panelURL)
+				_ = openurl.Open(t.panelURL)
 			case <-mRC.ClickedCh:
 				t.buf.Infof("tray", "reiniciando CoreDNS via systray")
 				go func() { _ = t.coredns.Restart() }()
@@ -282,7 +283,7 @@ func (t *Tray) refreshSitesMenu(parent *systray.MenuItem) {
 func (t *Tray) siteClickHandler(item *systray.MenuItem, url string) {
 	for range item.ClickedCh {
 		t.buf.Infof("tray", "abrindo site via systray: %s", url)
-		openBrowser(url)
+		_ = openurl.Open(url)
 	}
 }
 
@@ -333,19 +334,6 @@ func label(s string) string {
 		return "desabilitado"
 	}
 	return "?"
-}
-
-func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("open", url)
-	}
-	_ = cmd.Start()
 }
 
 const iconSize = 32
