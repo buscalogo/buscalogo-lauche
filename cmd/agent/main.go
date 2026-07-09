@@ -70,6 +70,13 @@ func main() {
 	buf.Infof("agent", "Scraper: nativo Go → CouchDB/buscalogo_scraping (enabled=%v)", cfg.Scraper.Enabled)
 	buf.Infof("agent", "P2P busca: %d signaling(s) enabled=%v", len(cfg.P2P.SignalingURLs), cfg.P2PEnabled())
 
+	postUpdate := os.Getenv("BUSCALOGO_POST_UPDATE") == "1"
+	if postUpdate {
+		_ = os.Unsetenv("BUSCALOGO_POST_UPDATE")
+		buf.Infof("agent", "reinício pós-atualização — aguardando liberação de portas")
+		time.Sleep(3 * time.Second)
+	}
+
 	cdns := coredns.New(cfg, buf)
 	ygg := yggdrasil.New(cfg, buf)
 	cdb := couchdb.New(cfg, buf)
@@ -100,12 +107,54 @@ func main() {
 		}
 	}
 	startService("Yggdrasil", cfg.Yggdrasil.Enabled, ygg.Start)
+	if cfg.Yggdrasil.Enabled {
+		time.Sleep(1500 * time.Millisecond)
+	}
 	startService("CoreDNS", cfg.DNS.Enabled, cdns.Start)
+	if cfg.DNS.Enabled {
+		time.Sleep(500 * time.Millisecond)
+	}
 	startService("CouchDB", cfg.CouchDB.Enabled, cdb.Start)
+	if cfg.CouchDB.Enabled {
+		time.Sleep(2 * time.Second)
+	}
 	startService("Scraper", cfg.Scraper.Enabled, scr.Start)
 	startService("P2P", cfg.P2PEnabled(), p2pConn.Start)
 	if err := sitesMgr.Start(); err != nil {
 		buf.Errorf("agent", "servidor de sites: %v", err)
+	}
+
+	// Pós-atualização: segunda tentativa para serviços que demoram (CouchDB, web).
+	if postUpdate {
+		go func() {
+			time.Sleep(8 * time.Second)
+			buf.Infof("agent", "verificação pós-atualização dos serviços")
+			if cfg.CouchDB.Enabled && cdb.Status().State != "running" {
+				buf.Warnf("agent", "CouchDB não rodando após update — reiniciando")
+				_ = cdb.Restart()
+			}
+			if cfg.DNS.Enabled && cdns.Status().State != "running" {
+				buf.Warnf("agent", "CoreDNS não rodando após update — reiniciando")
+				_ = cdns.Restart()
+			}
+			if cfg.Yggdrasil.Enabled && ygg.Status().State != "running" {
+				buf.Warnf("agent", "Yggdrasil não rodando após update — reiniciando")
+				_ = ygg.Restart()
+			}
+			running, _, _, _ := sitesMgr.WebStatus()
+			if !running {
+				buf.Warnf("agent", "servidor web parado após update — reiniciando")
+				_ = sitesMgr.Stop()
+				if err := sitesMgr.Start(); err != nil {
+					buf.Errorf("agent", "servidor de sites após update: %v", err)
+				}
+			}
+			if cfg.P2PEnabled() && !p2pConn.GetStats().Connected {
+				buf.Warnf("agent", "P2P desconectado após update — reconectando")
+				_ = p2pConn.Stop()
+				_ = p2pConn.Start()
+			}
+		}()
 	}
 
 	go func() {

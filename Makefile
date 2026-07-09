@@ -1,7 +1,7 @@
 APP      := buscalogo-agent
 PKG      := buscalogo-agent
 GO       := go
-VERSION  ?= 0.1.0
+VERSION  ?= $(shell tr -d ' \n' < VERSION 2>/dev/null || echo 0.1.0)
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS  := -X buscalogo-agent/internal/version.Version=$(VERSION) -X buscalogo-agent/internal/version.Commit=$(COMMIT)
 
@@ -15,7 +15,7 @@ COUCH_DEB_URL := https://apache.jfrog.io/artifactory/couchdb-deb/pool/C/CouchDB/
 
 ASSETS_DIR := assets/linux
 
-.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb desktop desktop-icons desktop-neutralino desktop-run desktop-build
+.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb release desktop desktop-icons desktop-neutralino desktop-run desktop-build
 
 all: build
 
@@ -111,6 +111,12 @@ fmt:
 
 tidy:
 	$(GO) mod tidy
+
+# Publica release: make release BUMP=patch|minor|major|0.1.4
+BUMP ?= patch
+release:
+	@chmod +x scripts/release.sh
+	@./scripts/release.sh $(BUMP)
 
 clean:
 	rm -f $(APP)

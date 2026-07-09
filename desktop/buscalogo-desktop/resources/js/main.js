@@ -326,6 +326,8 @@ async function relaunchApp() {
   } catch {
     // ignore
   }
+  // Daemon já foi reiniciado pelo .deb; só relança o shell Neutralino.
+  await new Promise((r) => setTimeout(r, 2500));
   const launch = "/opt/buscalogo/launch.sh";
   try {
     await Neutralino.os.execCommand(`nohup sh -c 'sleep 1; ${launch}' >/dev/null 2>&1 &`);

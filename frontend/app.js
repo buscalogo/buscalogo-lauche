@@ -1270,22 +1270,51 @@ async function doUpdateDownload() {
   }
 }
 
+async function waitForAgentVersion(expected, maxMs = 90000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    try {
+      const r = await fetch("/api/version");
+      if (r.ok) {
+        const v = await r.json();
+        if (v.version && (!expected || v.version !== expected)) {
+          $("#version").textContent = `BuscaLogo Agent v${v.version}`;
+          return v.version;
+        }
+      }
+    } catch { /* daemon reiniciando */ }
+    await new Promise((res) => setTimeout(res, 2000));
+  }
+  return null;
+}
+
 async function doUpdateInstall() {
   if (!confirm("Instalar atualização agora? Será solicitada sua senha de administrador.")) return;
+  const prevVersion = lastUpdateStatus?.current || "";
   updateBusy = true;
   renderUpdateUI({ ...(lastUpdateStatus || {}), state: "installing" });
   try {
     const r = await fetch("/api/update/install", { method: "POST" });
     const u = await r.json();
-    updateBusy = false;
     if (!r.ok) {
+      updateBusy = false;
       toast(u.error || "Falha na instalação");
       await refreshUpdateStatus();
       return;
     }
     renderUpdateUI(u);
     toast("Atualização instalada — reiniciando serviços…");
-    setTimeout(fetchStatus, 3000);
+    const newVer = await waitForAgentVersion(prevVersion);
+    updateBusy = false;
+    if (newVer) {
+      toast(`Versão ${newVer} ativa`);
+      updateDismissed = true;
+      $("#update-banner").style.display = "none";
+    } else {
+      toast("Reinício em andamento — aguarde alguns segundos");
+    }
+    await refreshUpdateStatus();
+    fetchStatus();
   } catch {
     updateBusy = false;
     toast("Erro na instalação");

@@ -1119,24 +1119,34 @@ func (s *Server) stopAllAndExit() {
 }
 
 // restartAgent para serviços e reexecuta buscalogo-agentd (--no-tray).
-// Usado após setcap para que o novo processo carregue a capability concedida.
+// Usado após setcap ou atualização .deb para carregar o binário novo.
 func (s *Server) restartAgent(daemon string) {
-	s.buf.Infof("api", "reiniciando agente em 1s para carregar cap_net_bind_service")
-	time.Sleep(1 * time.Second)
+	s.buf.Infof("api", "reiniciando agente após atualização")
+	s.stopServicesForRestart()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = s.Shutdown(ctx)
+	time.Sleep(2 * time.Second)
+
+	args := daemonArgs(daemon)
+	env := os.Environ()
+	env = append(env, "BUSCALOGO_POST_UPDATE=1")
+	s.buf.Infof("api", "re-executando %s %v", daemon, args[1:])
+	if err := syscall.Exec(daemon, args, env); err != nil {
+		s.buf.Errorf("api", "falha ao re-executar agente: %v", err)
+		os.Exit(1)
+	}
+}
+
+func (s *Server) stopServicesForRestart() {
+	if s.p2p != nil {
+		s.p2p.Stop()
+	}
+	_ = s.sites.Stop()
 	_ = s.coredns.Stop()
 	_ = s.couchdb.Stop()
 	_ = s.scraper.Stop()
 	_ = s.ygg.Stop()
-	_ = s.sites.Stop()
-	_ = s.Shutdown(ctx)
-	args := daemonArgs(daemon)
-	s.buf.Infof("api", "re-executando %s %v", daemon, args[1:])
-	if err := syscall.Exec(daemon, args, os.Environ()); err != nil {
-		s.buf.Errorf("api", "falha ao re-executar agente: %v", err)
-		os.Exit(1)
-	}
 }
 
 func daemonArgs(daemon string) []string {
