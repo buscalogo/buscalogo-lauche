@@ -70,7 +70,7 @@ func (s *Service) ReleaseRoot() (string, error) {
 			return "", err
 		}
 		userRoot := filepath.Join(bin, releaseName)
-		if hasRelease(userRoot) {
+		if releaseLooksComplete(userRoot) {
 			if hasRelease(bundledReleasePath) {
 				if releaseManifestID(userRoot) != releaseManifestID(bundledReleasePath) {
 					s.buf.Infof("couchdb", "atualizando release em %s", userRoot)
@@ -80,6 +80,8 @@ func (s *Service) ReleaseRoot() (string, error) {
 			} else {
 				return userRoot, nil
 			}
+		} else if isExec(filepath.Join(userRoot, "bin", "couchdb")) {
+			s.buf.Warnf("couchdb", "release incompleto em %s — recopiando", userRoot)
 		}
 		source := ""
 		if hasRelease(bundledReleasePath) {

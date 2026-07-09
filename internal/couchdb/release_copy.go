@@ -2,9 +2,8 @@ package couchdb
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -40,6 +39,34 @@ func releaseManifestID(root string) string {
 	return ver
 }
 
+func releaseLooksComplete(root string) bool {
+	if !isExec(filepath.Join(root, "bin", "couchdb")) {
+		return false
+	}
+	for _, rel := range []string{
+		"releases/start_erl.data",
+		"lib",
+		"share",
+	} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			return false
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "erts-") {
+			info, err := e.Info()
+			if err == nil && info.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func ensureUserRelease(binDir, source string) (string, error) {
 	target := filepath.Join(binDir, releaseName)
 	if source == "" {
@@ -47,7 +74,7 @@ func ensureUserRelease(binDir, source string) (string, error) {
 	}
 	srcID := releaseManifestID(source)
 	dstID := releaseManifestID(target)
-	if isExec(filepath.Join(target, "bin", "couchdb")) && (srcID == "" || srcID == dstID) {
+	if releaseLooksComplete(target) && (srcID == "" || srcID == dstID) {
 		return target, nil
 	}
 	if err := os.RemoveAll(target); err != nil {
@@ -55,6 +82,10 @@ func ensureUserRelease(binDir, source string) (string, error) {
 	}
 	if err := copyReleaseTree(source, target); err != nil {
 		return "", fmt.Errorf("copiar couchdb de %s: %w", source, err)
+	}
+	if !releaseLooksComplete(target) {
+		_ = os.RemoveAll(target)
+		return "", fmt.Errorf("cópia incompleta de %s (faltam erts/releases/lib)", source)
 	}
 	return target, nil
 }
@@ -64,47 +95,16 @@ func isExec(p string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
+// copyReleaseTree preserva symlinks e estrutura Erlang (cp -a).
 func copyReleaseTree(src, dst string) error {
 	src = filepath.Clean(src)
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return os.MkdirAll(dst, 0o755)
-		}
-		out := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(out, 0o755)
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-			return err
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		mode := info.Mode().Perm()
-		if mode&0o111 != 0 {
-			mode = 0o755
-		}
-		outf, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(outf, in); err != nil {
-			outf.Close()
-			return err
-		}
-		return outf.Close()
-	})
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command("cp", "-a", "--no-preserve=ownership", filepath.Join(src, "."), dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
