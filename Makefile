@@ -14,7 +14,7 @@ COUCH_DEB_URL := https://apache.jfrog.io/artifactory/couchdb-deb/pool/C/CouchDB/
 
 ASSETS_DIR := assets/linux
 
-.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb desktop desktop-icons desktop-run desktop-build
+.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb desktop desktop-icons desktop-neutralino desktop-run desktop-build
 
 all: build
 
@@ -36,8 +36,7 @@ dist: build
 	@cd dist && tar -czf $(APP)-linux-amd64.tar.gz $(APP)
 	@echo ">> Distribuição portátil: dist/$(APP)-linux-amd64.tar.gz"
 
-deb: build desktop-icons
-	@command -v neu >/dev/null || { echo ">> Erro: neu CLI não encontrado (npm i -g @neutralinojs/neu)"; exit 1; }
+deb: build desktop-icons desktop-neutralino
 	@cp -f $(DESKTOP_DIR)/neutralino.config.json /tmp/buscalogo-neutralino.config.bak
 	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/' $(DESKTOP_DIR)/neutralino.config.json > /tmp/buscalogo-neutralino.config.json
 	@mv /tmp/buscalogo-neutralino.config.json $(DESKTOP_DIR)/neutralino.config.json
@@ -130,12 +129,18 @@ desktop-icons:
 	@cp -f $(DESKTOP_ICONS)/systrayIcon.png $(DESKTOP_DIR)/trayIcon.png
 	@echo ">> Ícones desktop gerados (appIcon 200px, trayIcon 24px, systrayIcon 128px PNG32)"
 
+# neutralino.js não vai ao git (.gitignore) — neu update baixa client + binários.
+desktop-neutralino:
+	@command -v neu >/dev/null || { echo ">> Erro: neu CLI não encontrado (npm i -g @neutralinojs/neu)"; exit 1; }
+	@echo ">> Neutralino client e binários (neu update)"
+	@cd $(DESKTOP_DIR) && neu update
+
 # App desktop Neutralinojs (requer `neu` global: npm i -g @neutralinojs/neu)
-desktop-run: build desktop-icons
+desktop-run: build desktop-icons desktop-neutralino
 	cp -f $(APP) $(DESKTOP_DIR)/$(DAEMON_BIN)
 	cd $(DESKTOP_DIR) && neu run
 
-desktop-build: build desktop-icons
+desktop-build: build desktop-icons desktop-neutralino
 	cp -f $(APP) $(DESKTOP_DIR)/$(DAEMON_BIN)
 	cd $(DESKTOP_DIR) && neu build --release
 	@cp -f $(APP) $(DESKTOP_DIR)/dist/buscalogo-agent/

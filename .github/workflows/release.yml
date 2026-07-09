@@ -18,11 +18,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y fakeroot dpkg-dev curl imagemagick
           npm install -g @neutralinojs/neu
+
+      - name: Neutralino client (neutralino.js não está no git)
+        run: cd desktop/buscalogo-desktop && neu update
 
       - name: Extract version from tag
         id: ver
