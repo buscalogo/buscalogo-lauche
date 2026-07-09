@@ -119,3 +119,22 @@ func SitesHostsFile() (string, error) {
 func Join(first string, more ...string) string {
 	return filepath.Join(append([]string{first}, more...)...)
 }
+
+// IsDebInstall retorna true quando o daemon está instalado em /opt/buscalogo (.deb).
+func IsDebInstall() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false
+	}
+	dir := filepath.Clean(filepath.Dir(exe))
+	return dir == "/opt/buscalogo" || strings.HasPrefix(dir, "/opt/buscalogo/")
+}
+
+// UpdatesDir é ~/.buscalogo/updates (cache de pacotes .deb baixados).
+func UpdatesDir() (string, error) {
+	return sub("updates")
+}

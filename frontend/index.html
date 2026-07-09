@@ -4,13 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BuscaLogo Agent</title>
+<link rel="icon" href="/logo.png" type="image/png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <header>
   <div class="brand">
-    <div class="logo">B</div>
+    <img src="/logo.png" alt="BuscaLogo" class="logo" width="40" height="40">
     <div>
       <h1>BuscaLogo Agent</h1>
       <span id="node-name" class="muted">—</span>
@@ -25,6 +26,14 @@
 <div id="systray-warning" class="systray-banner" style="display:none">
   <span>&#9888;&#65039; &Iacute;cone do systray pode n&atilde;o aparecer: <b id="systray-msg"></b></span>
   <span id="systray-help" class="muted"></span>
+</div>
+
+<div id="update-banner" class="systray-banner update-banner" style="display:none">
+  <span>Nova vers&atilde;o <b id="update-banner-ver"></b> dispon&iacute;vel.</span>
+  <div class="actions" style="padding:0;margin:0">
+    <button id="update-banner-install" class="btn green small">Atualizar agora</button>
+    <button id="update-banner-dismiss" class="btn small">Depois</button>
+  </div>
 </div>
 
 <nav class="tabs">
@@ -296,6 +305,7 @@
       </div>
     </div>
     <div class="actions">
+      <button id="web-restart" class="btn" type="button" title="Reinicia o servidor HTTP dos sites .bl">Reiniciar web</button>
       <button id="web-enable-80" class="btn" title="Concede cap_net_bind_service (pede senha root)">Ativar porta 80</button>
     </div>
   </div>
@@ -303,7 +313,7 @@
 
 <!-- ===== TAB: SCRAPER ===== -->
 <div class="tab-panel" id="tab-scraper">
-  <div class="grid two scraper-top">
+  <div class="grid three scraper-top">
     <div class="card" id="card-scraper">
       <div class="card-head">
         <h2>Motor de raspagem</h2>
@@ -322,6 +332,23 @@
           <button data-svc="scraper" data-act="stop" class="btn red">Parar</button>
           <button data-svc="scraper" data-act="restart" class="btn">Reiniciar</button>
           <button id="scraper-clear-queue" class="btn">Limpar fila</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-p2p">
+      <div class="card-head">
+        <h2>Rede P2P</h2>
+        <span class="dot" id="p2p-dot" data-state="stopped"></span>
+      </div>
+      <div class="card-body">
+        <div class="kv"><span>Signaling</span><b id="p2p-connected">—</b></div>
+        <div class="kv"><span>Peer ID</span><b id="p2p-peer-id" class="mono" style="font-size:11px;word-break:break-all">—</b></div>
+        <div class="kv"><span>Consultas atendidas</span><b id="p2p-queries">—</b></div>
+        <div class="kv"><span>Resultados enviados</span><b id="p2p-results-sent">—</b></div>
+        <div id="p2p-status-detail" class="p2p-status-detail muted" style="display:none"></div>
+        <div class="row" style="margin-top:10px">
+          <button id="p2p-reconnect" class="btn small" type="button">Reconectar P2P</button>
         </div>
       </div>
     </div>
@@ -404,6 +431,45 @@
       <button id="scraper-cfg-save" class="btn green">Salvar configuração</button>
     </div>
   </div>
+
+  <div class="card" id="card-p2p-config">
+    <div class="card-head">
+      <h2>Configuração signaling</h2>
+      <span class="muted" style="font-size:12px;font-weight:500">config.yaml → p2p</span>
+    </div>
+    <div class="card-body form" id="p2p-config-simple">
+      <p class="hint mono" id="p2p-config-path" style="margin:0 0 12px">—</p>
+      <label class="checkbox-row">
+        <input id="p2p-simple-enabled" type="checkbox">
+        Conectar à rede P2P de busca
+      </label>
+      <label>Servidores de signaling
+        <textarea id="p2p-simple-urls" rows="4" spellcheck="false" placeholder="wss://api.buscalogo.com"></textarea>
+      </label>
+      <p class="hint" style="margin:4px 0 0">Um endereço por linha. Padrão: <code>wss://api.buscalogo.com</code></p>
+      <label>Máximo de resultados por consulta
+        <input id="p2p-simple-max-results" type="number" min="1" max="200" value="50">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="p2p-cfg-save-simple" class="btn green" type="button">Salvar</button>
+      <button id="p2p-cfg-reset" class="btn" type="button">Restaurar padrão</button>
+      <button id="p2p-cfg-reload" class="btn small" type="button">Recarregar</button>
+    </div>
+
+    <details class="p2p-advanced-panel" id="p2p-config-advanced">
+      <summary>Edição avançada (YAML)</summary>
+      <div class="card-body form" style="padding-top:0">
+        <div class="warning-banner">
+          <b>Atenção:</b> editar o YAML diretamente pode corromper a configuração e impedir o agente de conectar à rede P2P. Use apenas se souber o que está fazendo.
+        </div>
+        <textarea id="p2p-config-yaml" class="config-yaml" rows="9" spellcheck="false" placeholder="enabled: true&#10;signaling_urls:&#10;  - wss://api.buscalogo.com&#10;max_results_per_query: 50"></textarea>
+        <div class="actions" style="padding:0;margin-top:8px">
+          <button id="p2p-cfg-save-advanced" class="btn" type="button">Salvar YAML</button>
+        </div>
+      </div>
+    </details>
+  </div>
 </div>
 
 <!-- ===== TAB: CONFIG ===== -->
@@ -435,6 +501,29 @@
     </div>
     <div class="actions">
       <button id="cfg-save" class="btn green">Salvar configuração</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Atualiza&ccedil;&otilde;es</h2></div>
+    <div class="card-body">
+      <div class="kv"><span>Vers&atilde;o instalada</span><b id="upd-current">—</b></div>
+      <div class="kv"><span>&Uacute;ltima verifica&ccedil;&atilde;o</span><b id="upd-last-check">—</b></div>
+      <div class="kv"><span>Estado</span><b id="upd-state">—</b></div>
+      <div id="upd-progress-wrap" class="kv" style="display:none"><span>Progresso</span><b id="upd-progress">0%</b></div>
+      <p id="upd-message" class="hint" style="padding:0;margin:12px 0 0"></p>
+      <pre id="upd-notes" class="update-notes" style="display:none"></pre>
+      <p id="upd-portable-hint" class="hint" style="display:none;padding:0;margin:12px 0 0">
+        Instala&ccedil;&atilde;o port&aacute;til: baixe o .deb manualmente em
+        <a id="upd-release-link" href="#" target="_blank" rel="noopener">GitHub Releases</a>.
+      </p>
+    </div>
+    <div class="card-footer">
+      <div class="actions">
+        <button id="upd-check" class="btn">Verificar atualiza&ccedil;&otilde;es</button>
+        <button id="upd-download" class="btn" disabled>Baixar</button>
+        <button id="upd-install" class="btn green" disabled>Instalar e reiniciar</button>
+      </div>
     </div>
   </div>
 

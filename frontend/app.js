@@ -13,6 +13,11 @@ let currentConfig = null;
 let currentWebPort = 80;
 let currentDNSMode = "local";
 let yggAddr = "";
+let configDirty = false;
+let p2pConfigDirty = false;
+let updateBusy = false;
+let updateDismissed = false;
+let lastUpdateStatus = null;
 
 /* Tab switching */
 document.querySelectorAll(".tab").forEach(tab => {
@@ -92,26 +97,31 @@ async function fetchStatus() {
     $("#dns-mode-badge").textContent = d.dns_mode === "system" ? "Sistema (:53)" : "Local (:5333)";
 
     currentConfig = d.config || {};
-    fillConfig(d.config);
+    if (!configDirty) fillConfig(d.config);
     refreshLogSources();
     renderSites();
     renderSystrayWarning(d.systray);
+    if (d.version) $("#version").textContent = `BuscaLogo Agent v${d.version}`;
+    refreshUpdateStatus();
     if (d.web) {
       const w = d.web;
-      currentWebPort = w.actual_port || w.port || 80;
+      currentWebPort = w.running ? (w.actual_port || w.port || 80) : (w.actual_port || w.port || 80);
       const wBadge = $("#web-port-badge");
       const wBadge2 = $("#web-port-badge-2");
       const whint = $("#web-hint");
-      const cfgPort = w.port || 80;
-      const actual = currentWebPort;
-      [wBadge, wBadge2].forEach(el => { if (el) el.textContent = `:${actual}`; });
-      if (actual === 80) {
+      const actual = w.actual_port || w.port || 80;
+      [wBadge, wBadge2].forEach(el => { if (el) el.textContent = w.running ? `:${actual}` : "off"; });
+      if (!w.running) {
+        [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge warn"; } });
+        whint.innerHTML = `<b>Servidor web parado.</b> ${escapeHtml(w.error || "Porta 80 indisponível.")} Use <b>Reiniciar web</b> ou libere a porta 80 (Apache/Nginx).`;
+        whint.style.color = "var(--red)";
+      } else if (actual === 80 && !w.fallback) {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge ok"; } });
         whint.textContent = "Servindo .bl na porta 80 (acesse http://<host>.bl).";
         whint.style.color = "";
       } else if (w.fallback) {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge warn"; } });
-        whint.innerHTML = `Sem permiss\u00e3o para porta 80. Rodando na porta <b>${actual}</b>. Links dos sites usam <code>127.0.0.1:${actual}</code> para abrir no Modo A.`;
+        whint.innerHTML = `Porta 80 indisponível. Rodando na porta <b>${actual}</b>. Use <code>http://&lt;host&gt;.bl:${actual}</code> no navegador.`;
         whint.style.color = "var(--amber)";
       } else {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge"; } });
@@ -119,7 +129,8 @@ async function fetchStatus() {
         whint.style.color = "";
       }
       const btn = $("#web-enable-80");
-      if (actual === 80) {
+      const restartBtn = $("#web-restart");
+      if (w.running && actual === 80 && !w.fallback) {
         btn.textContent = "Porta 80 ativa";
         btn.disabled = true;
         btn.classList.add("ok");
@@ -128,6 +139,7 @@ async function fetchStatus() {
         btn.disabled = false;
         btn.classList.remove("ok");
       }
+      if (restartBtn) restartBtn.disabled = false;
     }
     $("#api-badge").textContent = "online";
     $("#api-badge").className = "badge ok";
@@ -249,6 +261,10 @@ async function doAutostart(enable) {
   }, 2000);
 }
 
+function markConfigDirty() {
+  configDirty = true;
+}
+
 function fillConfig(c) {
   if (!c) return;
   $("#cfg-node-name").value = c.node?.name || "";
@@ -261,6 +277,115 @@ function fillConfig(c) {
   $("#cfg-scraper-concurrent").value = c.scraper?.max_concurrent || 3;
   $("#cfg-scraper-depth").value = c.scraper?.max_depth || 3;
   $("#cfg-scraper-schedule").value = c.scraper?.default_schedule_days ?? 7;
+}
+
+function markP2PConfigDirty() {
+  p2pConfigDirty = true;
+}
+
+function applyP2PConfigToUI(d) {
+  const p = d.p2p || {};
+  const pathEl = $("#p2p-config-path");
+  const yamlEl = $("#p2p-config-yaml");
+  const enabledEl = $("#p2p-simple-enabled");
+  const urlsEl = $("#p2p-simple-urls");
+  const maxEl = $("#p2p-simple-max-results");
+  if (pathEl) {
+    pathEl.textContent = d.path ? `${d.path} (seção p2p)` : "config.yaml (seção p2p)";
+  }
+  if (yamlEl && d.yaml != null) yamlEl.value = d.yaml;
+  if (enabledEl) enabledEl.checked = p.enabled === true;
+  if (urlsEl) urlsEl.value = (p.signaling_urls || []).join("\n");
+  if (maxEl) maxEl.value = p.max_results_per_query > 0 ? p.max_results_per_query : 50;
+}
+
+async function loadP2PConfig(force) {
+  if (p2pConfigDirty && !force) return;
+  try {
+    const r = await fetch("/api/p2p/config");
+    const d = await r.json();
+    if (!r.ok || !d.ok) return;
+    applyP2PConfigToUI(d);
+    if (force) p2pConfigDirty = false;
+  } catch {
+    // ignore
+  }
+}
+
+function readP2PSimpleForm() {
+  const urls = ($("#p2p-simple-urls")?.value || "")
+    .split("\n").map(s => s.trim()).filter(Boolean);
+  const max = parseInt($("#p2p-simple-max-results")?.value, 10) || 50;
+  return {
+    enabled: $("#p2p-simple-enabled")?.checked === true,
+    signaling_urls: urls,
+    max_results_per_query: Math.min(200, Math.max(1, max)),
+  };
+}
+
+async function saveP2PConfigResponse(r, btn, origLabel) {
+  const d = await r.json();
+  if (!r.ok || !d.ok) throw new Error(d.error || "falha ao salvar");
+  p2pConfigDirty = false;
+  applyP2PConfigToUI(d);
+  toast(d.message || "Configuração signaling salva");
+  setTimeout(refreshScraperInfo, 600);
+  if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+}
+
+async function saveP2PConfigSimple() {
+  const btn = $("#p2p-cfg-save-simple");
+  const orig = btn?.textContent || "Salvar";
+  if (btn) { btn.disabled = true; btn.textContent = "salvando…"; }
+  try {
+    const p2p = readP2PSimpleForm();
+    if (p2p.enabled && p2p.signaling_urls.length === 0) {
+      throw new Error("informe ao menos um servidor de signaling");
+    }
+    const r = await fetch("/api/p2p/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p2p }),
+    });
+    await saveP2PConfigResponse(r, btn, orig);
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+async function saveP2PConfigAdvanced() {
+  const yamlEl = $("#p2p-config-yaml");
+  const btn = $("#p2p-cfg-save-advanced");
+  if (!yamlEl) return;
+  if (!confirm("Salvar o YAML manualmente? Um erro de sintaxe pode impedir o P2P de funcionar.")) return;
+  const orig = btn?.textContent || "Salvar YAML";
+  if (btn) { btn.disabled = true; btn.textContent = "salvando…"; }
+  try {
+    const r = await fetch("/api/p2p/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ yaml: yamlEl.value }),
+    });
+    await saveP2PConfigResponse(r, btn, orig);
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+async function resetP2PConfig() {
+  if (!confirm("Restaurar a configuração P2P ao padrão?\n\n• Conectar: ativado\n• Signaling: wss://api.buscalogo.com\n• Máx. resultados: 50")) return;
+  const btn = $("#p2p-cfg-reset");
+  const orig = btn?.textContent || "Restaurar padrão";
+  if (btn) { btn.disabled = true; btn.textContent = "restaurando…"; }
+  try {
+    const r = await fetch("/api/p2p/config/reset", { method: "POST" });
+    await saveP2PConfigResponse(r, btn, orig);
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
 }
 
 function renderSystrayWarning(info) {
@@ -302,12 +427,14 @@ async function regenerateCouchPassword() {
 
 async function refreshScraperInfo() {
   try {
-    const [infoR, statsR, tasksR, resultsR] = await Promise.all([
+    const [infoR, statsR, tasksR, resultsR, p2pR] = await Promise.all([
       fetch("/api/scraper/info"),
       fetch("/api/scraper/stats"),
       fetch("/api/scraper/tasks"),
       fetch("/api/scraper/results?limit=10"),
+      fetch("/api/p2p/status"),
     ]);
+    loadP2PConfig(false);
     const info = (await infoR.json()).info || {};
     const stats = (await statsR.json()).data || {};
     const tasks = (await tasksR.json()).data || {};
@@ -350,6 +477,63 @@ async function refreshScraperInfo() {
           return `<div class="scraper-result-row"><a href="${escapeHtml(r.url || "#")}" target="_blank" rel="noopener">${title}</a><span class="muted">${host}</span></div>`;
         }).join("");
       }
+    }
+
+    try {
+      const p2p = await p2pR.json();
+      const st = p2p.stats || {};
+      const dot = $("#p2p-dot");
+      const connEl = $("#p2p-connected");
+      const detailEl = $("#p2p-status-detail");
+      const enabled = st.enabled === true || p2p.config?.enabled === true;
+      const running = st.running === true;
+      if (dot) {
+        if (p2p.connected) dot.dataset.state = "running";
+        else if (!enabled) dot.dataset.state = "stopped";
+        else if (running) dot.dataset.state = "starting";
+        else dot.dataset.state = "stopped";
+      }
+      if (connEl) {
+        connEl.textContent = p2p.connected
+          ? `${st.connected_count || 1}/${st.total_signalings || "?"} conectado(s)`
+          : (st.message || p2p.message || "desconectado");
+        connEl.style.color = p2p.connected ? "var(--green)" : (!enabled ? "var(--muted)" : "var(--amber)");
+      }
+      if ($("#p2p-peer-id")) $("#p2p-peer-id").textContent = st.peer_id || "—";
+      if ($("#p2p-queries")) $("#p2p-queries").textContent = st.queries_responded ?? 0;
+      if ($("#p2p-results-sent")) $("#p2p-results-sent").textContent = st.total_results_sent ?? 0;
+      if (detailEl) {
+        const lines = [];
+        if (st.start_error) lines.push(st.start_error);
+        for (const sig of st.signalings || []) {
+          if (sig.state === "connected") {
+            lines.push(`${sig.url}: conectado`);
+          } else if (sig.last_error) {
+            lines.push(`${sig.url}: ${sig.last_error}`);
+          } else if (sig.state === "gave_up") {
+            lines.push(`${sig.url}: desistiu após ${sig.attempts || "?"} tentativas`);
+          } else if (sig.state === "connecting" || sig.state === "reconnecting") {
+            lines.push(`${sig.url}: reconectando…`);
+          } else if (sig.state === "error") {
+            lines.push(`${sig.url}: falha na conexão`);
+          }
+        }
+        if (!enabled && !lines.length) {
+          lines.push("P2P desabilitado — ative em Configuração signaling abaixo e salve.");
+        }
+        if (enabled && !running && !lines.length) {
+          lines.push("Serviço P2P parado — clique em Reconectar P2P ou salve a configuração.");
+        }
+        if (lines.length) {
+          detailEl.style.display = "block";
+          detailEl.innerHTML = lines.map(l => `<div>${escapeHtml(l)}</div>`).join("");
+        } else {
+          detailEl.style.display = "none";
+          detailEl.innerHTML = "";
+        }
+      }
+    } catch {
+      // ignore p2p status errors
     }
   } catch {
     const queueEl = $("#scraper-queue");
@@ -621,6 +805,27 @@ function siteUrl(host, port, dnsMode) {
   return base;
 }
 
+async function doWebRestart() {
+  const btn = $("#web-restart");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/web/restart", { method: "POST" });
+    const d = await r.json();
+    if (r.ok && d.running) {
+      toast(`Servidor web na porta ${d.actual_port}`);
+    } else if (r.ok) {
+      toast("Web reiniciado mas ainda parado: " + (d.error || "verifique porta 80"), 4000);
+    } else {
+      toast("Erro: " + (d.error || "falha"), 3000);
+    }
+    fetchStatus();
+    renderSites();
+  } catch {
+    toast("Erro de conexao", 3000);
+  }
+  if (btn) btn.disabled = false;
+}
+
 async function addSite() {
   const host = $("#site-host").value.trim();
   const type = $("#site-type").value;
@@ -695,6 +900,26 @@ async function serviceAction(svc, act) {
   }
 }
 
+async function doP2PReconnect() {
+  const btn = $("#p2p-reconnect");
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "conectando…";
+  try {
+    const r = await fetch("/api/p2p/restart", { method: "POST" });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "falha ao reconectar");
+    toast(d.message || (d.connected ? "P2P conectado" : "P2P reiniciado"));
+    refreshScraperInfo();
+  } catch (e) {
+    toast("Erro P2P: " + (e.message || e), 4000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 async function saveConfig() {
   const cfg = { ...(currentConfig || {}) };
   cfg.node = { name: $("#cfg-node-name").value.trim() };
@@ -721,6 +946,7 @@ async function saveConfig() {
     default_schedule_days: parseInt($("#cfg-scraper-schedule").value, 10),
   };
   const r = await fetch("/api/config", { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(cfg) });
+  if (r.ok) configDirty = false;
   return r.ok;
 }
 
@@ -879,9 +1105,15 @@ document.addEventListener("click", (ev) => {
   }
   if (ev.target.id === "site-add") addSite();
   if (ev.target.id === "web-enable-80") doWebEnable80();
+  if (ev.target.id === "web-restart") doWebRestart();
   if (ev.target.id === "scraper-add-url") addScraperURL();
   if (ev.target.id === "scraper-clear-queue") clearScraperQueue();
   if (ev.target.id === "scraper-refresh-results") refreshScraperInfo();
+  if (ev.target.id === "p2p-reconnect") doP2PReconnect();
+  if (ev.target.id === "p2p-cfg-save-simple") saveP2PConfigSimple();
+  if (ev.target.id === "p2p-cfg-save-advanced") saveP2PConfigAdvanced();
+  if (ev.target.id === "p2p-cfg-reset") resetP2PConfig();
+  if (ev.target.id === "p2p-cfg-reload") loadP2PConfig(true);
   if (ev.target.id === "scraper-cfg-save") {
     saveConfig().then(ok => {
       const btn = $("#scraper-cfg-save");
@@ -894,6 +1126,14 @@ document.addEventListener("click", (ev) => {
     });
   }
   if (ev.target.id === "autostart-disable") doAutostart(false);
+  if (ev.target.id === "upd-check") doUpdateCheck();
+  if (ev.target.id === "upd-download") doUpdateDownload();
+  if (ev.target.id === "upd-install") doUpdateInstall();
+  if (ev.target.id === "update-banner-install") doUpdateInstall();
+  if (ev.target.id === "update-banner-dismiss") {
+    updateDismissed = true;
+    $("#update-banner").style.display = "none";
+  }
 });
 
 $("#log-source")?.addEventListener("change", (e) => {
@@ -908,9 +1148,164 @@ $("#site-type")?.addEventListener("change", (e) => {
   $("#site-upstream").style.display = type === "proxy" ? "block" : "none";
 });
 
+const updateStateLabel = (st) => ({
+  idle: "aguardando",
+  checking: "verificando…",
+  downloading: "baixando…",
+  ready: "pronto para instalar",
+  installing: "instalando…",
+  done: "concluído",
+  error: "erro",
+}[st] || st);
+
+function renderUpdateUI(u) {
+  if (!u || updateBusy) return;
+  lastUpdateStatus = u;
+  const cur = $("#upd-current");
+  if (cur) cur.textContent = u.current || "—";
+  const lc = $("#upd-last-check");
+  if (lc) lc.textContent = u.last_check ? new Date(u.last_check).toLocaleString() : "—";
+  const st = $("#upd-state");
+  if (st) st.textContent = updateStateLabel(u.state);
+  const progWrap = $("#upd-progress-wrap");
+  const prog = $("#upd-progress");
+  if (progWrap && prog) {
+    const show = u.state === "downloading" || (u.progress > 0 && u.progress < 100);
+    progWrap.style.display = show ? "flex" : "none";
+    prog.textContent = `${u.progress || 0}%`;
+  }
+  const msg = $("#upd-message");
+  if (msg) {
+    if (u.error) {
+      msg.textContent = u.error;
+      msg.style.color = "var(--red)";
+    } else if (u.available) {
+      msg.textContent = `Nova versão ${u.latest} disponível.`;
+      msg.style.color = "var(--amber)";
+    } else if (u.state === "done") {
+      msg.textContent = "Atualização instalada. Reinicie o app desktop se necessário.";
+      msg.style.color = "var(--green)";
+    } else {
+      msg.textContent = "Você está na versão mais recente.";
+      msg.style.color = "";
+    }
+  }
+  const notes = $("#upd-notes");
+  if (notes) {
+    if (u.notes && u.available) {
+      notes.textContent = u.notes;
+      notes.style.display = "block";
+    } else {
+      notes.style.display = "none";
+    }
+  }
+  const portable = $("#upd-portable-hint");
+  const link = $("#upd-release-link");
+  if (portable) {
+    const showPortable = u.available && !u.can_install;
+    portable.style.display = showPortable ? "block" : "none";
+    if (link && u.release_url) link.href = u.release_url;
+  }
+  const btnCheck = $("#upd-check");
+  const btnDl = $("#upd-download");
+  const btnInst = $("#upd-install");
+  const busy = ["checking", "downloading", "installing"].includes(u.state);
+  if (btnCheck) btnCheck.disabled = busy;
+  if (btnDl) btnDl.disabled = busy || !u.available || !u.can_install || u.state === "ready";
+  if (btnInst) btnInst.disabled = busy || !u.available || !u.can_install;
+  const banner = $("#update-banner");
+  const bannerVer = $("#update-banner-ver");
+  if (banner && bannerVer) {
+    const showBanner = u.available && !updateDismissed && u.state !== "installing" && u.state !== "done";
+    banner.style.display = showBanner ? "flex" : "none";
+    if (showBanner) bannerVer.textContent = u.latest || "";
+  }
+}
+
+async function refreshUpdateStatus() {
+  if (updateBusy) return;
+  try {
+    const r = await fetch("/api/update/status");
+    if (!r.ok) return;
+    const u = await r.json();
+    renderUpdateUI(u);
+  } catch {
+    // painel pode estar sem updater em builds antigos
+  }
+}
+
+async function doUpdateCheck() {
+  updateBusy = true;
+  renderUpdateUI({ ...(lastUpdateStatus || {}), state: "checking" });
+  try {
+    const r = await fetch("/api/update/check", { method: "POST" });
+    const u = await r.json();
+    updateBusy = false;
+    renderUpdateUI(u);
+    if (u.error) toast(u.error);
+    else toast(u.available ? `Versão ${u.latest} disponível` : "Sem atualizações");
+  } catch (e) {
+    updateBusy = false;
+    toast("Erro ao verificar atualizações");
+  }
+}
+
+async function doUpdateDownload() {
+  updateBusy = true;
+  renderUpdateUI({ ...(lastUpdateStatus || {}), state: "downloading", progress: 0 });
+  try {
+    const r = await fetch("/api/update/download", { method: "POST" });
+    const u = await r.json();
+    updateBusy = false;
+    if (!r.ok) {
+      toast(u.error || "Falha no download");
+      await refreshUpdateStatus();
+      return;
+    }
+    renderUpdateUI(u);
+    toast("Pacote baixado");
+  } catch {
+    updateBusy = false;
+    toast("Erro no download");
+  }
+}
+
+async function doUpdateInstall() {
+  if (!confirm("Instalar atualização agora? Será solicitada sua senha de administrador.")) return;
+  updateBusy = true;
+  renderUpdateUI({ ...(lastUpdateStatus || {}), state: "installing" });
+  try {
+    const r = await fetch("/api/update/install", { method: "POST" });
+    const u = await r.json();
+    updateBusy = false;
+    if (!r.ok) {
+      toast(u.error || "Falha na instalação");
+      await refreshUpdateStatus();
+      return;
+    }
+    renderUpdateUI(u);
+    toast("Atualização instalada — reiniciando serviços…");
+    setTimeout(fetchStatus, 3000);
+  } catch {
+    updateBusy = false;
+    toast("Erro na instalação");
+  }
+}
+
 fetchStatus();
 fetchDNSStatus();
+document.querySelectorAll("[id^='cfg-']").forEach(el => {
+  el.addEventListener("input", markConfigDirty);
+  el.addEventListener("change", markConfigDirty);
+});
+["p2p-simple-enabled", "p2p-simple-urls", "p2p-simple-max-results", "p2p-config-yaml"].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("input", markP2PConfigDirty);
+  el.addEventListener("change", markP2PConfigDirty);
+});
 setInterval(fetchStatus, 3000);
+setInterval(refreshUpdateStatus, 5000);
 setInterval(fetchDNSStatus, 5000);
 loadRecent().then(connectLogs);
 

@@ -4,6 +4,8 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+
+	"buscalogo-agent/assets"
 )
 
 //go:embed index.html app.js style.css
@@ -20,5 +22,12 @@ func FS() fs.FS {
 
 // Handler retorna um http.Handler que serve o painel web.
 func Handler() http.Handler {
-	return http.FileServer(http.FS(FS()))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/logo.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(assets.Logo())
+	})
+	mux.Handle("/", http.FileServer(http.FS(FS())))
+	return mux
 }

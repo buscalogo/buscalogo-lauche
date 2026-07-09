@@ -5,6 +5,8 @@ go 1.26.2
 require (
 	fyne.io/systray v1.12.2
 	github.com/PuerkitoBio/goquery v1.12.0
+	github.com/gorilla/websocket v1.5.3
+	golang.org/x/mod v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

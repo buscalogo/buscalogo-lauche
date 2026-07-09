@@ -15,10 +15,12 @@ import (
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/dns"
 	"buscalogo-agent/internal/logx"
+	"buscalogo-agent/internal/p2p"
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/tray"
+	"buscalogo-agent/internal/update"
 	"buscalogo-agent/internal/yggdrasil"
 )
 
@@ -57,6 +59,7 @@ func main() {
 	}
 	log.Printf("CouchDB: http://%s:%d (modo=%s)", couchListen, couchPort, cfg.CouchDB.Mode)
 	log.Printf("Scraper: nativo Go → CouchDB/%s (enabled=%v)", "buscalogo_scraping", cfg.Scraper.Enabled)
+	log.Printf("P2P busca: %d signaling(s) (enabled=%v)", len(cfg.P2P.SignalingURLs), cfg.P2PEnabled())
 
 	buf.Infof("agent", "BuscaLogo Agent iniciando (home=%s)", home)
 	buf.Infof("agent", "API painel: http://%s", cfg.API.Listen)
@@ -65,14 +68,22 @@ func main() {
 	buf.Infof("agent", "Yggdrasil modo=%s", cfg.Yggdrasil.Mode)
 	buf.Infof("agent", "CouchDB: http://%s:%d (modo=%s)", couchListen, couchPort, cfg.CouchDB.Mode)
 	buf.Infof("agent", "Scraper: nativo Go → CouchDB/buscalogo_scraping (enabled=%v)", cfg.Scraper.Enabled)
+	buf.Infof("agent", "P2P busca: %d signaling(s) enabled=%v", len(cfg.P2P.SignalingURLs), cfg.P2PEnabled())
 
 	cdns := coredns.New(cfg, buf)
 	ygg := yggdrasil.New(cfg, buf)
 	cdb := couchdb.New(cfg, buf)
 	scr := scraper.New(cfg, cdb, buf)
+	var scrapeStore *scraper.Store
+	if cdb != nil {
+		scrapeStore = scraper.NewStore(cdb)
+	}
+	p2pConn := p2p.New(cfg, scrapeStore, buf)
 	dnsMgr := dns.NewManager(cfg, buf, cdns)
 	sitesMgr := sites.New(cfg, buf)
-	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, dnsMgr, sitesMgr)
+	updater := update.New(cfg, buf)
+	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, p2pConn, dnsMgr, sitesMgr, updater)
+	updater.StartBackground()
 
 	// Garante o hosts file dos sites ANTES de gerar o Corefile do CoreDNS.
 	if err := sitesMgr.SyncHosts(); err != nil {
@@ -92,6 +103,7 @@ func main() {
 	startService("CoreDNS", cfg.DNS.Enabled, cdns.Start)
 	startService("CouchDB", cfg.CouchDB.Enabled, cdb.Start)
 	startService("Scraper", cfg.Scraper.Enabled, scr.Start)
+	startService("P2P", cfg.P2PEnabled(), p2pConn.Start)
 	if err := sitesMgr.Start(); err != nil {
 		buf.Errorf("agent", "servidor de sites: %v", err)
 	}
@@ -116,6 +128,7 @@ func main() {
 		_ = cdns.Stop()
 		_ = cdb.Stop()
 		_ = scr.Stop()
+		_ = p2pConn.Stop()
 		_ = ygg.Stop()
 		buf.Infof("agent", "encerrado")
 	}

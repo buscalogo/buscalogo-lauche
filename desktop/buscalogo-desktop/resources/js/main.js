@@ -303,4 +303,38 @@ if (typeof NL_OS !== "undefined" && NL_OS !== "Darwin") {
 
 Neutralino.events.on("ready", () => {
   boot();
+  setInterval(checkUpdateRestart, 5000);
 });
+
+async function checkUpdateRestart() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2500);
+    const r = await fetch(`${PANEL_URL}/api/update/status`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.needs_restart) await relaunchApp();
+  } catch {
+    // painel pode estar reiniciando
+  }
+}
+
+async function relaunchApp() {
+  try {
+    await fetch(`${PANEL_URL}/api/update/restart-app`, { method: "POST" });
+  } catch {
+    // ignore
+  }
+  const launch = "/opt/buscalogo/launch.sh";
+  try {
+    await Neutralino.os.execCommand(`nohup sh -c 'sleep 1; ${launch}' >/dev/null 2>&1 &`);
+  } catch (e) {
+    console.error("relaunch:", e);
+  }
+  try {
+    await Neutralino.app.exit(0);
+  } catch {
+    try { await Neutralino.app.killProcess(); } catch { /* ignore */ }
+  }
+}

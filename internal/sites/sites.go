@@ -2,7 +2,6 @@ package sites
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"buscalogo-agent/internal/config"
@@ -32,13 +30,16 @@ type Site struct {
 }
 
 type Manager struct {
-	cfg        *config.Config
-	buf        *logx.Buffer
-	srv        *http.Server
-	mu         sync.RWMutex
-	sites      []Site
-	proxies    map[string]*httputil.ReverseProxy
-	actualPort int
+	cfg          *config.Config
+	buf          *logx.Buffer
+	srv          *http.Server
+	mu           sync.RWMutex
+	sites        []Site
+	proxies      map[string]*httputil.ReverseProxy
+	actualPort   int
+	portFallback bool
+	webRunning   bool
+	webError     string
 }
 
 func New(cfg *config.Config, buf *logx.Buffer) *Manager {
@@ -352,71 +353,118 @@ func (m *Manager) Start() error {
 	if port == 0 {
 		port = 80
 	}
+	m.actualPort = port
+	m.portFallback = false
+	m.webRunning = false
+	m.webError = ""
 
-	// Quando ExternalListen é true, escuta em [::]:port (dual-stack: cobre
-	// 127.0.0.1, Yggdrasil IPv6 e todas as interfaces). Caso contrário,
-	// apenas em 127.0.0.1:port (local).
-	var addr string
-	if m.cfg.Web.ExternalListen {
-		addr = fmt.Sprintf("[::]:%d", port)
-	} else {
-		addr = fmt.Sprintf("%s:%d", m.cfg.Web.Listen, port)
-	}
-
-	m.srv = &http.Server{
-		Addr:              addr,
-		Handler:           m.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	go func() {
-		m.buf.Infof("sites", "tentando servidor web em %s", addr)
-		err := m.srv.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed && isPermissionDenied(err) && port == 80 {
-			fallbackAddr := strings.Replace(addr, ":80", ":8080", 1)
-			m.buf.Warnf("sites", "porta 80 sem permissão; fallback para %s", fallbackAddr)
-			m.mu.Lock()
-			m.actualPort = 8080
-			m.srv = &http.Server{
-				Addr:              fallbackAddr,
-				Handler:           m.Handler(),
-				ReadHeaderTimeout: 10 * time.Second,
-			}
-			m.mu.Unlock()
-			if _, err := m.WriteHostsFile(); err != nil {
-				m.buf.Warnf("sites", "falha ao reescrever hosts: %v", err)
-			}
-			if err := m.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				m.buf.Errorf("sites", "servidor web fallback: %v", err)
-			}
-			return
-		}
-		if err != nil && err != http.ErrServerClosed {
-			m.buf.Errorf("sites", "servidor web: %v", err)
-		}
-	}()
+	go m.runWebServer(port)
 	return nil
+}
+
+func (m *Manager) Restart() error {
+	if err := m.Stop(); err != nil {
+		m.buf.Warnf("sites", "parar servidor web: %v", err)
+	}
+	return m.Start()
+}
+
+func (m *Manager) runWebServer(port int) {
+	if m.tryListen(port, false) {
+		return
+	}
+	if port == 80 {
+		m.tryListen(8080, true)
+	}
+}
+
+func (m *Manager) listenAddrs(port int) []string {
+	if m.cfg.Web.ExternalListen {
+		return []string{
+			fmt.Sprintf("[::]:%d", port),
+			fmt.Sprintf("127.0.0.1:%d", port),
+		}
+	}
+	listen := m.cfg.Web.Listen
+	if listen == "" {
+		listen = "127.0.0.1"
+	}
+	return []string{fmt.Sprintf("%s:%d", listen, port)}
+}
+
+func (m *Manager) tryListen(port int, fallback bool) bool {
+	handler := m.Handler()
+	for _, addr := range m.listenAddrs(port) {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			m.buf.Warnf("sites", "bind %s: %v", addr, err)
+			continue
+		}
+
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+
+		m.mu.Lock()
+		m.srv = srv
+		m.actualPort = port
+		m.portFallback = fallback
+		m.webRunning = true
+		m.webError = ""
+		m.mu.Unlock()
+
+		if fallback {
+			m.buf.Warnf("sites", "servidor web em %s (fallback — porta 80 indisponível)", addr)
+		} else {
+			m.buf.Infof("sites", "servidor web em %s", addr)
+		}
+		if _, err := m.WriteHostsFile(); err != nil {
+			m.buf.Warnf("sites", "falha ao reescrever hosts: %v", err)
+		}
+
+		err = srv.Serve(ln)
+
+		m.mu.Lock()
+		m.webRunning = false
+		if err != nil && err != http.ErrServerClosed {
+			m.webError = err.Error()
+			m.buf.Errorf("sites", "servidor web em %s: %v", addr, err)
+		}
+		m.mu.Unlock()
+		return true
+	}
+
+	msg := fmt.Sprintf("não foi possível abrir a porta %d (ocupada ou sem permissão)", port)
+	m.mu.Lock()
+	m.webRunning = false
+	m.webError = msg
+	m.mu.Unlock()
+	m.buf.Errorf("sites", "servidor web: %s", msg)
+	return false
+}
+
+func (m *Manager) WebStatus() (running bool, actualPort int, fallback bool, errMsg string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.webRunning, m.actualPort, m.portFallback, m.webError
 }
 
 func (m *Manager) Stop() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.srv == nil {
+	srv := m.srv
+	m.mu.Unlock()
+	if srv == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return m.srv.Shutdown(ctx)
-}
-
-func isPermissionDenied(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, syscall.EACCES) {
-		return true
-	}
-	return strings.Contains(err.Error(), "permission denied")
+	err := srv.Shutdown(ctx)
+	m.mu.Lock()
+	m.srv = nil
+	m.webRunning = false
+	m.mu.Unlock()
+	return err
 }
 
 // ActualPort retorna a porta efetiva do servidor web (pode ser fallback 8080).
@@ -430,6 +478,12 @@ func (m *Manager) ActualPort() int {
 		return m.cfg.Web.Port
 	}
 	return 80
+}
+
+func (m *Manager) PortFallback() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.portFallback
 }
 
 // ListSites expõe as definições carregadas para a API.

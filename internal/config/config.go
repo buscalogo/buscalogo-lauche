@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"buscalogo-agent/internal/paths"
@@ -28,6 +29,8 @@ type Data struct {
 	CouchDB   CouchDB   `yaml:"couchdb" json:"couchdb"`
 	Sites     []Site    `yaml:"sites" json:"sites"`
 	Scraper   Scraper   `yaml:"scraper" json:"scraper"`
+	P2P       P2P       `yaml:"p2p" json:"p2p"`
+	Update    Update    `yaml:"update" json:"update"`
 	Cache     Cache     `yaml:"cache" json:"cache"`
 	Bootstrap []string  `yaml:"bootstrap" json:"bootstrap"`
 }
@@ -126,8 +129,65 @@ type Scraper struct {
 	AllowedDomains       []string `yaml:"allowed_domains" json:"allowed_domains"`
 }
 
+// P2P conecta o agente à rede de busca BuscaLogo (signaling WebSocket).
+type P2P struct {
+	Enabled            *bool    `yaml:"enabled,omitempty" json:"enabled"`
+	SignalingURLs      []string `yaml:"signaling_urls" json:"signaling_urls"`
+	MaxResultsPerQuery int      `yaml:"max_results_per_query" json:"max_results_per_query"`
+}
+
+// EnabledOrDefault retorna true quando enabled não está definido no YAML (padrão: conectado).
+func (p P2P) EnabledOrDefault() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
+}
+
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
 type Cache struct {
 	Size int `yaml:"size" json:"size"`
+}
+
+// Update configura verificação de novas versões via GitHub Releases.
+type Update struct {
+	Enabled            *bool  `yaml:"enabled,omitempty" json:"enabled"`
+	CheckIntervalHours int    `yaml:"check_interval_hours" json:"check_interval_hours"`
+	GitHubRepo         string `yaml:"github_repo" json:"github_repo"`
+	Channel            string `yaml:"channel" json:"channel"`
+}
+
+func (u Update) EnabledOrDefault() bool {
+	if u.Enabled == nil {
+		return true
+	}
+	return *u.Enabled
+}
+
+func (u Update) CheckIntervalHoursOrDefault() int {
+	if u.CheckIntervalHours <= 0 {
+		return 24
+	}
+	return u.CheckIntervalHours
+}
+
+func (u Update) GitHubRepoOrDefault() string {
+	if strings.TrimSpace(u.GitHubRepo) == "" {
+		return "buscalogo/buscalogo-lauche"
+	}
+	return strings.TrimSpace(u.GitHubRepo)
+}
+
+func DefaultUpdate() Update {
+	return Update{
+		Enabled:            BoolPtr(true),
+		CheckIntervalHours: 24,
+		GitHubRepo:         "buscalogo/buscalogo-lauche",
+		Channel:            "stable",
+	}
 }
 
 func Default() *Config {
@@ -169,6 +229,8 @@ func Default() *Config {
 			DiscoverInternalOnly: true,
 			DefaultScheduleDays:  7,
 		},
+		P2P: DefaultP2P(),
+		Update:  DefaultUpdate(),
 		Cache:   Cache{Size: 2048},
 	}}
 }
@@ -283,6 +345,76 @@ func (c *Config) applyDefaults() {
 	if c.Cache.Size == 0 {
 		c.Cache.Size = 2048
 	}
+	if len(c.P2P.SignalingURLs) == 0 {
+		c.P2P.SignalingURLs = []string{"wss://api.buscalogo.com"}
+	}
+	if c.P2P.MaxResultsPerQuery <= 0 {
+		c.P2P.MaxResultsPerQuery = 50
+	}
+}
+
+// P2PEnabled indica se o P2P deve iniciar (padrão: true).
+func (c *Config) P2PEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.P2P.EnabledOrDefault()
+}
+
+func applyP2PDefaults(p *P2P) {
+	if len(p.SignalingURLs) == 0 {
+		p.SignalingURLs = []string{"wss://api.buscalogo.com"}
+	}
+	if p.MaxResultsPerQuery <= 0 {
+		p.MaxResultsPerQuery = 50
+	}
+}
+
+// P2PYAML retorna o bloco p2p do config.yaml como texto YAML.
+func (c *Config) P2PYAML() (string, error) {
+	c.mu.RLock()
+	p := P2P{
+		Enabled:            BoolPtr(c.P2P.EnabledOrDefault()),
+		SignalingURLs:      append([]string(nil), c.P2P.SignalingURLs...),
+		MaxResultsPerQuery: c.P2P.MaxResultsPerQuery,
+	}
+	c.mu.RUnlock()
+	data, err := yaml.Marshal(&p)
+	if err != nil {
+		return "", fmt.Errorf("serializar p2p: %w", err)
+	}
+	return string(data), nil
+}
+
+// SetP2P atualiza a seção p2p e persiste no config.yaml.
+func (c *Config) SetP2P(p P2P) error {
+	applyP2PDefaults(&p)
+	c.mu.Lock()
+	c.P2P = p
+	c.mu.Unlock()
+	return c.Save()
+}
+
+// DefaultP2P retorna a configuração P2P padrão do agente.
+func DefaultP2P() P2P {
+	return P2P{
+		Enabled:            BoolPtr(true),
+		SignalingURLs:      []string{"wss://api.buscalogo.com"},
+		MaxResultsPerQuery: 50,
+	}
+}
+
+// ResetP2P restaura a seção p2p aos valores padrão.
+func (c *Config) ResetP2P() error {
+	return c.SetP2P(DefaultP2P())
+}
+
+// ApplyP2PYAML interpreta YAML da seção p2p e persiste.
+func (c *Config) ApplyP2PYAML(text string) error {
+	var p P2P
+	if err := yaml.Unmarshal([]byte(text), &p); err != nil {
+		return fmt.Errorf("yaml inválido: %w", err)
+	}
+	return c.SetP2P(p)
 }
 
 func (c *Config) Save() error {
@@ -330,6 +462,12 @@ func (c *Config) snapshotLocked() Data {
 		CouchDB:   c.CouchDB,
 		Sites:     sites,
 		Scraper:   c.Scraper,
+		P2P: P2P{
+			Enabled:            BoolPtr(c.P2P.EnabledOrDefault()),
+			SignalingURLs:      append([]string(nil), c.P2P.SignalingURLs...),
+			MaxResultsPerQuery: c.P2P.MaxResultsPerQuery,
+		},
+		Update:    c.Update,
 		Cache:     c.Cache,
 		Bootstrap: append([]string(nil), c.Bootstrap...),
 	}
@@ -417,6 +555,10 @@ func (c *Config) MergeJSON(in []byte) error {
 			err = json.Unmarshal(val, &base.Sites)
 		case "scraper":
 			err = json.Unmarshal(val, &base.Scraper)
+		case "p2p":
+			err = json.Unmarshal(val, &base.P2P)
+		case "update":
+			err = json.Unmarshal(val, &base.Update)
 		case "cache":
 			err = json.Unmarshal(val, &base.Cache)
 		case "bootstrap":

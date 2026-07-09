@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot dpkg-dev curl imagemagick
+          npm install -g @neutralinojs/neu
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build assets and package
+        run: |
+          make assets assets-couchdb deb VERSION=${{ steps.ver.outputs.version }}
+        env:
+          DEB_CODENAME: bookworm
+
+      - name: Generate manifest.json
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          DEB="dist/buscalogo-agent_${VERSION}_amd64.deb"
+          SHA=$(sha256sum "$DEB" | awk '{print $1}')
+          URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/buscalogo-agent_${VERSION}_amd64.deb"
+          cat > dist/manifest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "linux_amd64_deb": {
+              "url": "${URL}",
+              "sha256": "${SHA}",
+              "name": "buscalogo-agent_${VERSION}_amd64.deb"
+            }
+          }
+          EOF
+          cat dist/manifest.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb
+            dist/manifest.json
+          generate_release_notes: true

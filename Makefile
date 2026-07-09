@@ -1,6 +1,9 @@
 APP      := buscalogo-agent
 PKG      := buscalogo-agent
 GO       := go
+VERSION  ?= 0.1.0
+COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS  := -X buscalogo-agent/internal/version.Version=$(VERSION) -X buscalogo-agent/internal/version.Commit=$(COMMIT)
 
 YGG_VERSION := 0.5.14
 DNS_VERSION := 1.14.4
@@ -16,7 +19,7 @@ ASSETS_DIR := assets/linux
 all: build
 
 build:
-	$(GO) build -o $(APP) ./cmd/agent
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(APP) ./cmd/agent
 
 run: build
 	./$(APP)
@@ -35,8 +38,12 @@ dist: build
 
 deb: build desktop-icons
 	@command -v neu >/dev/null || { echo ">> Erro: neu CLI não encontrado (npm i -g @neutralinojs/neu)"; exit 1; }
+	@cp -f $(DESKTOP_DIR)/neutralino.config.json /tmp/buscalogo-neutralino.config.bak
+	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/' $(DESKTOP_DIR)/neutralino.config.json > /tmp/buscalogo-neutralino.config.json
+	@mv /tmp/buscalogo-neutralino.config.json $(DESKTOP_DIR)/neutralino.config.json
 	@cp -f $(APP) $(DESKTOP_DIR)/$(DAEMON_BIN)
 	@cd $(DESKTOP_DIR) && neu build --release
+	@mv -f /tmp/buscalogo-neutralino.config.bak $(DESKTOP_DIR)/neutralino.config.json
 	@rm -rf dist/deb
 	@mkdir -p dist/deb/DEBIAN dist/deb/opt/buscalogo/data/bin dist/deb/usr/local/bin dist/deb/usr/share/applications dist/deb/etc/xdg/autostart
 	@cp $(DESKTOP_DIR)/dist/buscalogo-agent/buscalogo-agent-linux_x64 dist/deb/opt/buscalogo/buscalogo-agent
@@ -44,6 +51,8 @@ deb: build desktop-icons
 	@cp $(DESKTOP_DIR)/dist/buscalogo-agent/resources.neu dist/deb/opt/buscalogo/
 	@cp $(DESKTOP_DIR)/resources/icons/systrayIcon.png dist/deb/opt/buscalogo/trayIcon.png
 	@cp dist/buscalogo-agent-launch.sh dist/deb/opt/buscalogo/launch.sh
+	@cp dist/update-install.sh dist/deb/opt/buscalogo/update-install.sh
+	@chmod 755 dist/deb/opt/buscalogo/update-install.sh
 	@cp -R www dist/deb/opt/buscalogo/
 	@cp -R sites dist/deb/opt/buscalogo/
 	@cp assets/icons/logo.png dist/deb/opt/buscalogo/buscalogo-agent.png
@@ -57,12 +66,12 @@ deb: build desktop-icons
 	@ln -sf /opt/buscalogo/launch.sh dist/deb/usr/local/bin/buscalogo-agent
 	@cp dist/buscalogo-agent.desktop dist/deb/usr/share/applications/buscalogo-agent.desktop
 	@cp dist/buscalogo-agent.desktop dist/deb/etc/xdg/autostart/buscalogo-agent.desktop
-	@cp dist/control dist/deb/DEBIAN/control
+	@sed 's/^Version: .*/Version: $(VERSION)/' dist/control > dist/deb/DEBIAN/control
 	@cp dist/postinst dist/deb/DEBIAN/postinst
 	@cp dist/postrm dist/deb/DEBIAN/postrm
 	@chmod +x dist/deb/DEBIAN/postinst dist/deb/DEBIAN/postrm
-	@cd dist && fakeroot dpkg-deb --build deb $(APP)_0.1.0_amd64.deb
-	@echo ">> Pacote .deb: dist/$(APP)_0.1.0_amd64.deb"
+	@cd dist && fakeroot dpkg-deb --build deb $(APP)_$(VERSION)_amd64.deb
+	@echo ">> Pacote .deb: dist/$(APP)_$(VERSION)_amd64.deb"
 
 assets:
 	@echo ">> Baixando binários para $(ASSETS_DIR)/"

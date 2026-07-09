@@ -40,10 +40,12 @@ header {
 
 .brand { display: flex; align-items: center; gap: 14px; }
 .logo {
-  width: 40px; height: 40px; border-radius: 10px;
-  background: linear-gradient(135deg, var(--accent), #7b5cff);
-  display: grid; place-items: center;
-  font-weight: 800; font-size: 20px; color: #fff;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  display: block;
 }
 header h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
 .muted { color: var(--muted); font-size: 13px; }
@@ -73,6 +75,75 @@ header h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.3px
   font-size: 13px;
 }
 .systray-banner b { color: var(--amber); }
+
+.update-banner b { color: var(--green); }
+.update-notes {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.p2p-status-detail {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(245, 166, 35, 0.08);
+  border: 1px solid rgba(245, 166, 35, 0.25);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.p2p-status-detail div + div { margin-top: 4px; }
+
+.config-yaml {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 120px;
+}
+
+.p2p-advanced-panel {
+  border-top: 1px solid var(--border);
+  margin: 0 18px 14px;
+}
+.p2p-advanced-panel summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 12px 0;
+  color: var(--muted);
+  list-style-position: outside;
+}
+.p2p-advanced-panel[open] summary {
+  color: var(--amber);
+  margin-bottom: 4px;
+}
+
+.warning-banner {
+  background: rgba(229, 72, 77, 0.1);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.warning-banner b { color: var(--red); }
 
 /* Tabs */
 .tabs {
@@ -175,7 +246,8 @@ main {
 
 /* Grid layouts */
 .grid.two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.grid.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 18px; }
+.grid.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.scraper-top.grid.three { gap: 18px; }
 .grid.four { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 18px; }
 @media (max-width: 700px) { .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; } }
 

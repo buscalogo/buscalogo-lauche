@@ -21,11 +21,14 @@ import (
 	"buscalogo-agent/internal/dns"
 	"buscalogo-agent/internal/logx"
 	"buscalogo-agent/internal/openurl"
+	"buscalogo-agent/internal/p2p"
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/system"
 	"buscalogo-agent/internal/tray"
+	"buscalogo-agent/internal/update"
+	"buscalogo-agent/internal/version"
 	"buscalogo-agent/internal/yggdrasil"
 	"buscalogo-agent/frontend"
 )
@@ -37,13 +40,25 @@ type Server struct {
 	ygg     *yggdrasil.Service
 	couchdb *couchdb.Service
 	scraper *scraper.Service
+	p2p     *p2p.Connector
 	dns     *dns.Manager
 	sites   *sites.Manager
+	updater *update.Service
 	srv     *http.Server
 }
 
-func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, d *dns.Manager, sm *sites.Manager) *Server {
-	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, dns: d, sites: sm}
+func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, p2pConn *p2p.Connector, d *dns.Manager, sm *sites.Manager, upd *update.Service) *Server {
+	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, p2p: p2pConn, dns: d, sites: sm, updater: upd}
+	if upd != nil {
+		upd.SetOnInstalled(func() {
+			daemon, err := paths.DaemonExecutable()
+			if err != nil {
+				s.buf.Errorf("update", "daemon para reinício: %v", err)
+				return
+			}
+			s.restartAgent(daemon)
+		})
+	}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	s.srv = &http.Server{
@@ -137,15 +152,28 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/scraper/clear", s.handleScraperClear)
 	mux.HandleFunc("GET /api/scraper/results", s.handleScraperResults)
 	mux.HandleFunc("DELETE /api/scraper/results/{docId}", s.handleScraperDeleteResult)
+	mux.HandleFunc("GET /api/p2p/status", s.handleP2PStatus)
+	mux.HandleFunc("GET /api/p2p/test-search", s.handleP2PTestSearch)
+	mux.HandleFunc("GET /api/p2p/config", s.handleP2PGetConfig)
+	mux.HandleFunc("PUT /api/p2p/config", s.handleP2PPutConfig)
+	mux.HandleFunc("POST /api/p2p/config/reset", s.handleP2PResetConfig)
+	mux.HandleFunc("POST /api/p2p/restart", s.handleP2PRestart)
 	mux.HandleFunc("GET /api/sites", s.handleSitesList)
 	mux.HandleFunc("POST /api/sites", s.handleSitesAdd)
 	mux.HandleFunc("DELETE /api/sites/{host}", s.handleSitesDelete)
 	mux.HandleFunc("POST /api/open-url", s.handleOpenURL)
 	mux.HandleFunc("POST /api/web/enable-80", s.handleWebEnable80)
+	mux.HandleFunc("POST /api/web/restart", s.handleWebRestart)
 	mux.HandleFunc("GET /api/autostart", s.handleGetAutostart)
 	mux.HandleFunc("POST /api/autostart/enable", s.handleAutostartEnable)
 	mux.HandleFunc("POST /api/autostart/disable", s.handleAutostartDisable)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
+	mux.HandleFunc("GET /api/update/status", s.handleUpdateStatus)
+	mux.HandleFunc("POST /api/update/check", s.handleUpdateCheck)
+	mux.HandleFunc("POST /api/update/download", s.handleUpdateDownload)
+	mux.HandleFunc("POST /api/update/install", s.handleUpdateInstall)
+	mux.HandleFunc("POST /api/update/restart-app", s.handleUpdateRestartApp)
 	mux.Handle("/", frontend.Handler())
 }
 
@@ -168,6 +196,7 @@ func writeErr(w http.ResponseWriter, code int, format string, args ...any) {
 
 type statusResp struct {
 	Node      config.Node      `json:"node"`
+	Version   string           `json:"version"`
 	DNSMode   string           `json:"dns_mode"`
 	Services  map[string]any   `json:"services"`
 	System    dns.SystemInfo   `json:"system"`
@@ -183,12 +212,21 @@ type webInfo struct {
 	ActualPort     int    `json:"actual_port"`
 	Fallback       bool   `json:"fallback"`
 	ExternalListen bool   `json:"external_listen"`
+	Running        bool   `json:"running"`
+	Error          string `json:"error,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	actualPort := s.sites.ActualPort()
+	running, actualPort, fallback, webErr := s.sites.WebStatus()
+	if actualPort == 0 {
+		actualPort = s.sites.ActualPort()
+	}
+	if !running {
+		fallback = s.sites.PortFallback()
+	}
 	resp := statusResp{
 		Node:    s.cfg.Node,
+		Version: version.Version,
 		DNSMode: s.cfg.DNS.Mode,
 		Services: map[string]any{
 			"coredns":   s.coredns.Status(),
@@ -201,8 +239,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Listen:         s.cfg.Web.Listen,
 			Port:           s.cfg.Web.Port,
 			ActualPort:     actualPort,
-			Fallback:       actualPort != s.cfg.Web.Port && s.cfg.Web.Port != 0,
+			Fallback:       fallback,
 			ExternalListen: s.cfg.Web.ExternalListen,
+			Running:        running,
+			Error:          webErr,
 		},
 		Systray:   tray.CheckEnvironment(),
 		Autostart: autostart.IsEnabled(),
@@ -225,6 +265,12 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		err = s.applyAction(action, s.couchdb.Start, s.couchdb.Stop, s.couchdb.Restart)
 	case "scraper":
 		err = s.applyAction(action, s.scraper.Start, s.scraper.Stop, s.scraper.Restart)
+	case "p2p":
+		if s.p2p == nil {
+			writeErr(w, http.StatusServiceUnavailable, "P2P não inicializado")
+			return
+		}
+		err = s.applyAction(action, s.p2p.Start, s.p2p.Stop, s.p2p.Restart)
 	default:
 		writeErr(w, http.StatusBadRequest, "serviço desconhecido: %s", name)
 		return
@@ -234,7 +280,7 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "services": map[string]any{
-		"coredns": s.coredns.Status(), "yggdrasil": s.ygg.Status(), "couchdb": s.couchdb.Status(), "scraper": s.scraper.Status(),
+		"coredns": s.coredns.Status(), "yggdrasil": s.ygg.Status(), "couchdb": s.couchdb.Status(), "scraper": s.scraper.Status(), "p2p": s.p2pStatusBrief(),
 	}})
 }
 
@@ -404,6 +450,176 @@ func (s *Server) handleScraperDeleteResult(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Resultado removido"})
 }
 
+func (s *Server) handleP2PStatus(w http.ResponseWriter, r *http.Request) {
+	if s.p2p == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":        true,
+			"connected": false,
+			"message":   "P2P não inicializado",
+		})
+		return
+	}
+	st := s.p2p.GetStats()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"connected": st.Connected,
+		"message":   st.Message,
+		"stats":     st,
+		"config": map[string]any{
+			"enabled":        s.cfg.P2PEnabled(),
+			"signaling_urls": s.cfg.P2P.SignalingURLs,
+			"max_results":    s.cfg.P2P.MaxResultsPerQuery,
+		},
+	})
+}
+
+func (s *Server) handleP2PGetConfig(w http.ResponseWriter, r *http.Request) {
+	yamlText, err := s.cfg.P2PYAML()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	cfgPath := s.cfg.Path()
+	if cfgPath == "" {
+		if p, err := paths.ConfigFile(); err == nil {
+			cfgPath = p
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"path": cfgPath,
+		"yaml": yamlText,
+		"p2p":  s.cfg.Snapshot().P2P,
+	})
+}
+
+func (s *Server) handleP2PPutConfig(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "ler body: %v", err)
+		return
+	}
+	var req struct {
+		YAML string     `json:"yaml"`
+		P2P  *config.P2P `json:"p2p"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido: %v", err)
+		return
+	}
+	switch {
+	case req.P2P != nil:
+		if err := s.cfg.SetP2P(*req.P2P); err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+	case strings.TrimSpace(req.YAML) != "":
+		if err := s.cfg.ApplyP2PYAML(req.YAML); err != nil {
+			writeErr(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "informe p2p ou yaml")
+		return
+	}
+	s.restartP2PFromConfig()
+	s.writeP2PConfigOK(w, "Configuração P2P salva")
+}
+
+func (s *Server) handleP2PResetConfig(w http.ResponseWriter, r *http.Request) {
+	if err := s.cfg.ResetP2P(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "reset p2p: %v", err)
+		return
+	}
+	s.restartP2PFromConfig()
+	s.writeP2PConfigOK(w, "Configuração P2P restaurada ao padrão")
+}
+
+func (s *Server) restartP2PFromConfig() {
+	if s.p2p == nil {
+		return
+	}
+	go func() {
+		if s.cfg.P2PEnabled() {
+			if err := s.p2p.Restart(); err != nil {
+				s.buf.Warnf("api", "reiniciar P2P após config: %v", err)
+			}
+		} else if err := s.p2p.Stop(); err != nil {
+			s.buf.Warnf("api", "parar P2P após config: %v", err)
+		}
+	}()
+}
+
+func (s *Server) writeP2PConfigOK(w http.ResponseWriter, message string) {
+	yamlText, _ := s.cfg.P2PYAML()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"yaml":    yamlText,
+		"p2p":     s.cfg.Snapshot().P2P,
+		"message": message,
+	})
+}
+
+func (s *Server) handleP2PRestart(w http.ResponseWriter, r *http.Request) {
+	if s.p2p == nil {
+		writeErr(w, http.StatusServiceUnavailable, "P2P não inicializado")
+		return
+	}
+	var err error
+	if s.cfg.P2PEnabled() {
+		err = s.p2p.Restart()
+	} else {
+		err = s.p2p.Stop()
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "reiniciar P2P: %v", err)
+		return
+	}
+	st := s.p2p.GetStats()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"connected": st.Connected,
+		"message":   st.Message,
+		"stats":     st,
+	})
+}
+
+func (s *Server) p2pStatusBrief() map[string]any {
+	if s.p2p == nil {
+		return map[string]any{"running": false, "connected": false}
+	}
+	st := s.p2p.GetStats()
+	return map[string]any{
+		"running":   st.Running,
+		"connected": st.Connected,
+		"message":   st.Message,
+	}
+}
+
+func (s *Server) handleP2PTestSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeErr(w, http.StatusBadRequest, "parâmetro q é obrigatório")
+		return
+	}
+	if s.p2p == nil {
+		writeErr(w, http.StatusServiceUnavailable, "P2P não inicializado")
+		return
+	}
+	results, err := s.p2p.TestSearch(q)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"query":   q,
+		"count":   len(results),
+		"results": results,
+		"stats":   s.p2p.GetStats(),
+	})
+}
+
 func (s *Server) handleCouchInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "info": s.couchdb.Info()})
 }
@@ -495,6 +711,11 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "ler body: %v", err)
 		return
 	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido: %v", err)
+		return
+	}
 	if err := s.cfg.MergeJSON(body); err != nil {
 		writeErr(w, http.StatusBadRequest, "merge config: %v", err)
 		return
@@ -502,6 +723,17 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.Save(); err != nil {
 		writeErr(w, http.StatusInternalServerError, "save: %v", err)
 		return
+	}
+	if _, hasP2P := raw["p2p"]; hasP2P && s.p2p != nil {
+		go func() {
+			if s.cfg.P2PEnabled() {
+				if err := s.p2p.Restart(); err != nil {
+					s.buf.Warnf("api", "reiniciar P2P após config: %v", err)
+				}
+			} else if err := s.p2p.Stop(); err != nil {
+				s.buf.Warnf("api", "parar P2P após config: %v", err)
+			}
+		}()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": s.cfg.Snapshot()})
 }
@@ -769,6 +1001,22 @@ func (s *Server) handleWebEnable80(w http.ResponseWriter, r *http.Request) {
 	go s.restartAgent(daemon)
 }
 
+func (s *Server) handleWebRestart(w http.ResponseWriter, r *http.Request) {
+	if err := s.sites.Restart(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "reiniciar servidor web: %v", err)
+		return
+	}
+	time.Sleep(150 * time.Millisecond)
+	running, port, fallback, webErr := s.sites.WebStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"running":     running,
+		"actual_port": port,
+		"fallback":    fallback,
+		"error":       webErr,
+	})
+}
+
 func (s *Server) handleGetAutostart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -795,6 +1043,64 @@ func (s *Server) handleAutostartDisable(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	go s.stopAllAndExit()
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, version.Info())
+}
+
+func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	if s.updater == nil {
+		writeErr(w, http.StatusServiceUnavailable, "atualizações não disponíveis")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.updater.Status())
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if s.updater == nil {
+		writeErr(w, http.StatusServiceUnavailable, "atualizações não disponíveis")
+		return
+	}
+	st, err := s.updater.Check(true)
+	if err != nil {
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
+	if s.updater == nil {
+		writeErr(w, http.StatusServiceUnavailable, "atualizações não disponíveis")
+		return
+	}
+	st, err := s.updater.Download()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
+	if s.updater == nil {
+		writeErr(w, http.StatusServiceUnavailable, "atualizações não disponíveis")
+		return
+	}
+	st, err := s.updater.Install()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleUpdateRestartApp(w http.ResponseWriter, r *http.Request) {
+	if s.updater != nil {
+		s.updater.ClearNeedsRestart()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "relaunch": true})
 }
 
 func (s *Server) stopAllAndExit() {
