@@ -56,11 +56,13 @@ func releaseLooksComplete(root string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "erts-") {
-			info, err := e.Info()
-			if err == nil && info.IsDir() {
-				return true
-			}
+		if !strings.HasPrefix(e.Name(), "erts-") {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		info, err := os.Stat(p)
+		if err == nil && info.IsDir() {
+			return true
 		}
 	}
 	return false

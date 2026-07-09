@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1135,19 +1134,17 @@ func (s *Server) stopAllAndExit() {
 // restartAgent reinicia o daemon após setcap ou atualização .deb.
 func (s *Server) restartAgent(daemon string) {
 	s.buf.Infof("api", "reiniciando agente após atualização")
-	s.stopServicesForRestart()
-	// CoreDNS entra em lameduck 5s — aguardar antes de subir novo processo.
-	time.Sleep(6 * time.Second)
-
-	args := daemonArgs(daemon)
-	cmd := exec.Command(daemon, args[1:]...)
-	cmd.Env = append(os.Environ(), "BUSCALOGO_POST_UPDATE=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		s.buf.Errorf("api", "falha ao iniciar novo agente: %v", err)
-		os.Exit(1)
+	if err := scheduleDaemonRestart(daemon, s.buf); err != nil {
+		s.buf.Errorf("api", "agendar reinício: %v — tentando exec direto", err)
+		s.stopServicesForRestart()
+		time.Sleep(6 * time.Second)
+		args := daemonArgs(daemon)
+		env := append(os.Environ(), "BUSCALOGO_POST_UPDATE=1")
+		if err := syscall.Exec(daemon, args, env); err != nil {
+			s.buf.Errorf("api", "falha ao re-executar agente: %v", err)
+			os.Exit(1)
+		}
 	}
-	s.buf.Infof("api", "novo agente pid=%d — encerrando processo antigo", cmd.Process.Pid)
 	os.Exit(0)
 }
 

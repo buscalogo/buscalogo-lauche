@@ -315,8 +315,8 @@ async function checkUpdateRestart() {
     if (!r.ok) return;
     const d = await r.json();
     if (!d.needs_restart) return;
-    // Aguarda o novo daemon subir antes de relançar só o shell Neutralino.
-    for (let i = 0; i < 30; i++) {
+    // Aguarda o novo daemon (reinício via script leva ~10s).
+    for (let i = 0; i < 40; i++) {
       if (await isAgentRunning()) break;
       await new Promise((res) => setTimeout(res, 2000));
     }
