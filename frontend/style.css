@@ -89,6 +89,34 @@ header h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.3px
   max-height: 200px;
   overflow: auto;
 }
+.upd-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+.upd-progress-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: none;
+  background: var(--panel2);
+}
+.upd-progress-bar::-webkit-progress-bar {
+  background: var(--panel2);
+  border-radius: 999px;
+}
+.upd-progress-bar::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--accent), var(--green));
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+.upd-progress-bar::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--accent), var(--green));
+  border-radius: 999px;
+}
 
 .p2p-status-detail {
   margin-top: 10px;

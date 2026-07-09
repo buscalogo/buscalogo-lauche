@@ -17,6 +17,7 @@ import (
 	"buscalogo-agent/internal/logx"
 	"buscalogo-agent/internal/p2p"
 	"buscalogo-agent/internal/paths"
+	"buscalogo-agent/internal/process"
 	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/tray"
@@ -73,8 +74,9 @@ func main() {
 	postUpdate := os.Getenv("BUSCALOGO_POST_UPDATE") == "1"
 	if postUpdate {
 		_ = os.Unsetenv("BUSCALOGO_POST_UPDATE")
-		buf.Infof("agent", "reinício pós-atualização — aguardando liberação de portas")
-		time.Sleep(3 * time.Second)
+		buf.Infof("agent", "reinício pós-atualização — limpando processos órfãos")
+		cleanupStaleProcesses(buf)
+		time.Sleep(2 * time.Second)
 	}
 
 	cdns := coredns.New(cfg, buf)
@@ -116,6 +118,7 @@ func main() {
 	}
 	startService("CouchDB", cfg.CouchDB.Enabled, cdb.Start)
 	if cfg.CouchDB.Enabled {
+		cdb.StartWatchdog()
 		time.Sleep(2 * time.Second)
 	}
 	startService("Scraper", cfg.Scraper.Enabled, scr.Start)
@@ -130,8 +133,11 @@ func main() {
 			time.Sleep(8 * time.Second)
 			buf.Infof("agent", "verificação pós-atualização dos serviços")
 			if cfg.CouchDB.Enabled && cdb.Status().State != "running" {
-				buf.Warnf("agent", "CouchDB não rodando após update — reiniciando")
-				_ = cdb.Restart()
+				buf.Warnf("agent", "CouchDB não rodando após update — reparando")
+				_ = cdb.RepairAndStart()
+			} else if cfg.CouchDB.Enabled && !cdb.Reachable(nil) {
+				buf.Warnf("agent", "CouchDB não responde após update — reparando")
+				_ = cdb.RepairAndStart()
 			}
 			if cfg.DNS.Enabled && cdns.Status().State != "running" {
 				buf.Warnf("agent", "CoreDNS não rodando após update — reiniciando")
@@ -203,4 +209,22 @@ func main() {
 
 	tray.New(panelURL, buf, cfg, cdns, ygg, cdb, scr, sitesMgr, nil).Run()
 	shutdown()
+}
+
+func cleanupStaleProcesses(buf *logx.Buffer) {
+	targets := []struct {
+		name string
+		bin  string
+	}{
+		{"coredns", "/opt/buscalogo/data/bin/coredns"},
+		{"yggdrasil", "/opt/buscalogo/data/bin/yggdrasil"},
+		{"couchdb", ""},
+		{"beam.smp", ""},
+		{"epmd", ""},
+	}
+	for _, t := range targets {
+		if err := process.KillExistingByBinary(buf, t.name, t.bin); err != nil {
+			buf.Warnf("agent", "limpeza %s: %v", t.name, err)
+		}
+	}
 }

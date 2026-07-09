@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
 const bundledReleasePath = "/opt/buscalogo/data/bin/couchdb"
 
 func releaseManifestField(root, key string) string {
@@ -95,16 +94,32 @@ func isExec(p string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
-// copyReleaseTree preserva symlinks e estrutura Erlang (cp -a).
+// copyReleaseTree preserva symlinks e estrutura Erlang (tar pipe — mais confiável que cp).
 func copyReleaseTree(src, dst string) error {
 	src = filepath.Clean(src)
+	if err := os.RemoveAll(dst); err != nil {
+		return fmt.Errorf("limpar destino: %w", err)
+	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
-	cmd := exec.Command("cp", "-a", "--no-preserve=ownership", filepath.Join(src, "."), dst)
+	// tar evita problemas com symlinks (data -> /var/lib/couchdb) e permissões mistas.
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf("cd %q && tar cf - . | (cd %q && tar xf -)", src, dst))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+		// fallback cp -a
+		if err2 := os.RemoveAll(dst); err2 != nil {
+			return err2
+		}
+		if err3 := os.MkdirAll(dst, 0o755); err3 != nil {
+			return err3
+		}
+		cp := exec.Command("cp", "-a", "--no-preserve=ownership", filepath.Join(src, "."), dst)
+		out2, err4 := cp.CombinedOutput()
+		if err4 != nil {
+			return fmt.Errorf("tar: %w (%s); cp: %v (%s)", err, strings.TrimSpace(string(out)), err4, strings.TrimSpace(string(out2)))
+		}
 	}
 	return nil
 }

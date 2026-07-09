@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -140,6 +141,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/yggdrasil/identity", s.handleYggImportIdentity)
 	mux.HandleFunc("GET /api/couchdb/info", s.handleCouchInfo)
 	mux.HandleFunc("POST /api/couchdb/regenerate-password", s.handleCouchRegeneratePassword)
+	mux.HandleFunc("POST /api/couchdb/repair", s.handleCouchRepair)
 	mux.HandleFunc("GET /api/scraper/info", s.handleScraperInfo)
 	mux.HandleFunc("GET /api/scraper/tasks", s.handleScraperTasks)
 	mux.HandleFunc("POST /api/scraper/tasks", s.handleScraperAddTask)
@@ -638,6 +640,18 @@ func (s *Server) handleCouchRegeneratePassword(w http.ResponseWriter, r *http.Re
 	})
 }
 
+func (s *Server) handleCouchRepair(w http.ResponseWriter, r *http.Request) {
+	if err := s.couchdb.RepairAndStart(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"info":   s.couchdb.Info(),
+		"status": s.couchdb.Status(),
+	})
+}
+
 func (s *Server) applyAction(action string, start, stop, restart func() error) error {
 	switch action {
 	case "start":
@@ -1118,24 +1132,23 @@ func (s *Server) stopAllAndExit() {
 	os.Exit(0)
 }
 
-// restartAgent para serviços e reexecuta buscalogo-agentd (--no-tray).
-// Usado após setcap ou atualização .deb para carregar o binário novo.
+// restartAgent reinicia o daemon após setcap ou atualização .deb.
 func (s *Server) restartAgent(daemon string) {
 	s.buf.Infof("api", "reiniciando agente após atualização")
 	s.stopServicesForRestart()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = s.Shutdown(ctx)
-	time.Sleep(2 * time.Second)
+	// CoreDNS entra em lameduck 5s — aguardar antes de subir novo processo.
+	time.Sleep(6 * time.Second)
 
 	args := daemonArgs(daemon)
-	env := os.Environ()
-	env = append(env, "BUSCALOGO_POST_UPDATE=1")
-	s.buf.Infof("api", "re-executando %s %v", daemon, args[1:])
-	if err := syscall.Exec(daemon, args, env); err != nil {
-		s.buf.Errorf("api", "falha ao re-executar agente: %v", err)
+	cmd := exec.Command(daemon, args[1:]...)
+	cmd.Env = append(os.Environ(), "BUSCALOGO_POST_UPDATE=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		s.buf.Errorf("api", "falha ao iniciar novo agente: %v", err)
 		os.Exit(1)
 	}
+	s.buf.Infof("api", "novo agente pid=%d — encerrando processo antigo", cmd.Process.Pid)
+	os.Exit(0)
 }
 
 func (s *Server) stopServicesForRestart() {

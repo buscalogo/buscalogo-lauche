@@ -1169,16 +1169,29 @@ function renderUpdateUI(u) {
   if (st) st.textContent = updateStateLabel(u.state);
   const progWrap = $("#upd-progress-wrap");
   const prog = $("#upd-progress");
+  const progBar = $("#upd-progress-bar");
   if (progWrap && prog) {
-    const show = u.state === "downloading" || (u.progress > 0 && u.progress < 100);
-    progWrap.style.display = show ? "flex" : "none";
-    prog.textContent = `${u.progress || 0}%`;
+    const show = u.state === "downloading" || u.state === "installing" ||
+      (u.progress > 0 && u.progress < 100);
+    progWrap.style.display = show ? "block" : "none";
+    const pct = u.progress || 0;
+    prog.textContent = `${pct}%`;
+    if (progBar) {
+      progBar.value = pct;
+      progBar.max = 100;
+    }
   }
   const msg = $("#upd-message");
   if (msg) {
     if (u.error) {
       msg.textContent = u.error;
       msg.style.color = "var(--red)";
+    } else if (u.state === "downloading") {
+      msg.textContent = `Baixando atualização… ${u.progress || 0}%`;
+      msg.style.color = "var(--accent)";
+    } else if (u.state === "installing") {
+      msg.textContent = "Instalando atualização (senha admin)…";
+      msg.style.color = "var(--accent)";
     } else if (u.available) {
       msg.textContent = `Nova versão ${u.latest} disponível.`;
       msg.style.color = "var(--amber)";
@@ -1253,10 +1266,12 @@ async function doUpdateCheck() {
 async function doUpdateDownload() {
   updateBusy = true;
   renderUpdateUI({ ...(lastUpdateStatus || {}), state: "downloading", progress: 0 });
+  const poll = setInterval(refreshUpdateStatus, 500);
   try {
     const r = await fetch("/api/update/download", { method: "POST" });
     const u = await r.json();
     updateBusy = false;
+    clearInterval(poll);
     if (!r.ok) {
       toast(u.error || "Falha no download");
       await refreshUpdateStatus();
@@ -1266,6 +1281,7 @@ async function doUpdateDownload() {
     toast("Pacote baixado");
   } catch {
     updateBusy = false;
+    clearInterval(poll);
     toast("Erro no download");
   }
 }

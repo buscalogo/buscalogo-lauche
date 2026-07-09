@@ -65,41 +65,41 @@ func (s *Service) ReleaseRoot() (string, error) {
 		}
 		return "", fmt.Errorf("modo external mas release couchdb não encontrado")
 	default:
+		// Instalação .deb: release completo em /opt (somente leitura; dados em ~/.buscalogo).
+		if releaseLooksComplete(bundledReleasePath) {
+			return bundledReleasePath, nil
+		}
+		if hasRelease(bundledReleasePath) {
+			s.buf.Warnf("couchdb", "release em %s incompleto — tentando cópia local", bundledReleasePath)
+		}
+
 		bin, err := paths.Bin()
 		if err != nil {
 			return "", err
 		}
 		userRoot := filepath.Join(bin, releaseName)
 		if releaseLooksComplete(userRoot) {
-			if hasRelease(bundledReleasePath) {
-				if releaseManifestID(userRoot) != releaseManifestID(bundledReleasePath) {
-					s.buf.Infof("couchdb", "atualizando release em %s", userRoot)
-				} else {
-					return userRoot, nil
-				}
-			} else {
-				return userRoot, nil
-			}
-		} else if isExec(filepath.Join(userRoot, "bin", "couchdb")) {
-			s.buf.Warnf("couchdb", "release incompleto em %s — recopiando", userRoot)
+			return userRoot, nil
 		}
-		source := ""
+		if isExec(filepath.Join(userRoot, "bin", "couchdb")) {
+			s.buf.Warnf("couchdb", "release incompleto em %s — recopiando", userRoot)
+			_ = os.RemoveAll(userRoot)
+		}
+
 		if hasRelease(bundledReleasePath) {
-			source = bundledReleasePath
-		} else if assets.HasRelease(releaseName) {
+			root, err := ensureUserRelease(bin, bundledReleasePath)
+			if err != nil {
+				return "", err
+			}
+			s.buf.Infof("couchdb", "release copiado para %s", root)
+			return root, nil
+		}
+		if assets.HasRelease(releaseName) {
 			embedded, err := assets.EnsureRelease(releaseName, bin)
 			if err != nil {
 				return "", err
 			}
 			return embedded, nil
-		}
-		if source != "" {
-			root, err := ensureUserRelease(bin, source)
-			if err != nil {
-				return "", err
-			}
-			s.buf.Infof("couchdb", "release copiado para %s (gravável pelo usuário)", root)
-			return root, nil
 		}
 		for _, root := range []string{"/opt/couchdb"} {
 			if hasRelease(root) {
@@ -337,6 +337,10 @@ func randomPassword(n int) (string, error) {
 
 // patchRelease ajusta o release embutido: desativa log em /var/log e reforça override em local.d.
 func (s *Service) patchRelease(root, logFile string) error {
+	clean := filepath.Clean(root)
+	if strings.HasPrefix(clean, "/opt/") {
+		return nil
+	}
 	localD := filepath.Join(root, "etc", "local.d")
 	if err := os.MkdirAll(localD, 0o755); err != nil {
 		return err

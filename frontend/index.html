@@ -510,7 +510,10 @@
       <div class="kv"><span>Vers&atilde;o instalada</span><b id="upd-current">—</b></div>
       <div class="kv"><span>&Uacute;ltima verifica&ccedil;&atilde;o</span><b id="upd-last-check">—</b></div>
       <div class="kv"><span>Estado</span><b id="upd-state">—</b></div>
-      <div id="upd-progress-wrap" class="kv" style="display:none"><span>Progresso</span><b id="upd-progress">0%</b></div>
+      <div id="upd-progress-wrap" style="display:none;margin-top:12px">
+        <div class="upd-progress-label"><span>Download</span><b id="upd-progress">0%</b></div>
+        <progress id="upd-progress-bar" class="upd-progress-bar" value="0" max="100"></progress>
+      </div>
       <p id="upd-message" class="hint" style="padding:0;margin:12px 0 0"></p>
       <pre id="upd-notes" class="update-notes" style="display:none"></pre>
       <p id="upd-portable-hint" class="hint" style="display:none;padding:0;margin:12px 0 0">

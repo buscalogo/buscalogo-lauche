@@ -314,7 +314,13 @@ async function checkUpdateRestart() {
     clearTimeout(t);
     if (!r.ok) return;
     const d = await r.json();
-    if (d.needs_restart) await relaunchApp();
+    if (!d.needs_restart) return;
+    // Aguarda o novo daemon subir antes de relançar só o shell Neutralino.
+    for (let i = 0; i < 30; i++) {
+      if (await isAgentRunning()) break;
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+    if (await isAgentRunning()) await relaunchApp();
   } catch {
     // painel pode estar reiniciando
   }
