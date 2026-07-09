@@ -39,7 +39,7 @@ jobs:
         run: |
           make assets assets-couchdb deb VERSION=${{ steps.ver.outputs.version }}
         env:
-          DEB_CODENAME: bookworm
+          DEB_CODENAME: jammy
 
       - name: Generate manifest.json
         run: |

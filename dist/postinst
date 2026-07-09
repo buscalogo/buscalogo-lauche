@@ -9,6 +9,10 @@ if [ "$1" = "configure" ]; then
     fi
     if [ -d "$DIR/data/bin/couchdb/bin" ]; then
         chmod -R a+rX "$DIR/data/bin/couchdb"
+        FILELOG="$DIR/data/bin/couchdb/etc/default.d/10-filelog.ini"
+        if [ -f "$FILELOG" ] && [ ! -f "${FILELOG}.disabled" ]; then
+            mv "$FILELOG" "${FILELOG}.disabled" || true
+        fi
     fi
     chmod 0755 "$DIR/buscalogo-agent" "$DIR/buscalogo-agentd" 2>/dev/null || true
     chmod 0755 "$DIR/data/bin/coredns" "$DIR/data/bin/yggdrasil" 2>/dev/null || true

@@ -65,19 +65,39 @@ func (s *Service) ReleaseRoot() (string, error) {
 		}
 		return "", fmt.Errorf("modo external mas release couchdb não encontrado")
 	default:
-		for _, root := range []string{
-			"/opt/buscalogo/data/bin/couchdb",
-		} {
-			if hasRelease(root) {
-				return root, nil
-			}
-		}
 		bin, err := paths.Bin()
 		if err != nil {
 			return "", err
 		}
-		if assets.HasRelease(releaseName) {
-			return assets.EnsureRelease(releaseName, bin)
+		userRoot := filepath.Join(bin, releaseName)
+		if hasRelease(userRoot) {
+			if hasRelease(bundledReleasePath) {
+				if releaseManifestID(userRoot) != releaseManifestID(bundledReleasePath) {
+					s.buf.Infof("couchdb", "atualizando release em %s", userRoot)
+				} else {
+					return userRoot, nil
+				}
+			} else {
+				return userRoot, nil
+			}
+		}
+		source := ""
+		if hasRelease(bundledReleasePath) {
+			source = bundledReleasePath
+		} else if assets.HasRelease(releaseName) {
+			embedded, err := assets.EnsureRelease(releaseName, bin)
+			if err != nil {
+				return "", err
+			}
+			return embedded, nil
+		}
+		if source != "" {
+			root, err := ensureUserRelease(bin, source)
+			if err != nil {
+				return "", err
+			}
+			s.buf.Infof("couchdb", "release copiado para %s (gravável pelo usuário)", root)
+			return root, nil
 		}
 		for _, root := range []string{"/opt/couchdb"} {
 			if hasRelease(root) {
@@ -315,15 +335,16 @@ func randomPassword(n int) (string, error) {
 
 // patchRelease ajusta o release embutido: desativa log em /var/log e reforça override em local.d.
 func (s *Service) patchRelease(root, logFile string) error {
-	filelog := filepath.Join(root, "etc", "default.d", "10-filelog.ini")
-	if _, err := os.Stat(filelog); err == nil {
-		if err := os.Rename(filelog, filelog+".disabled"); err != nil {
-			return err
-		}
-	}
 	localD := filepath.Join(root, "etc", "local.d")
 	if err := os.MkdirAll(localD, 0o755); err != nil {
 		return err
+	}
+	filelog := filepath.Join(root, "etc", "default.d", "10-filelog.ini")
+	if _, err := os.Stat(filelog); err == nil {
+		if err := os.Rename(filelog, filelog+".disabled"); err != nil {
+			// local.ini já define [log]; ignorar se release for somente leitura
+			s.buf.Warnf("couchdb", "desativar 10-filelog.ini: %v", err)
+		}
 	}
 	override := fmt.Sprintf("; BuscaLogo Agent\n[log]\nwriter = file\nfile = %s\nlevel = notice\n", logFile)
 	return os.WriteFile(filepath.Join(localD, "99-buscalogo-log.ini"), []byte(override), 0o644)

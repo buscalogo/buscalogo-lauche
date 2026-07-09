@@ -3,6 +3,8 @@
 # --- Build Go ---
 /buscalogo-agent
 buscalogo-agent
+/agent
+agent
 *.exe
 *.test
 *.out

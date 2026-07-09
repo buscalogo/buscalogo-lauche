@@ -8,8 +8,9 @@ LDFLAGS  := -X buscalogo-agent/internal/version.Version=$(VERSION) -X buscalogo-
 YGG_VERSION := 0.5.14
 DNS_VERSION := 1.14.4
 COUCH_VERSION := 3.5.2
-# Codename Debian/Ubuntu (bookworm, noble, jammy, …) — detecta do sistema.
-DEB_CODENAME := $(shell . /etc/os-release 2>/dev/null && echo $${VERSION_CODENAME:-bookworm})
+# CouchDB sempre ~jammy (glibc 2.35): roda em Ubuntu 22.04/24.04/26.04 e Debian 12+.
+# Binário compilado contra glibc antiga executa em sistemas com glibc mais nova.
+DEB_CODENAME ?= jammy
 COUCH_DEB_URL := https://apache.jfrog.io/artifactory/couchdb-deb/pool/C/CouchDB/couchdb_$(COUCH_VERSION)~$(DEB_CODENAME)_amd64.deb
 
 ASSETS_DIR := assets/linux
