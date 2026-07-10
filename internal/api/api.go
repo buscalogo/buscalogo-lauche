@@ -14,11 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"buscalogo-agent/frontend"
 	"buscalogo-agent/internal/autostart"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/dns"
+	"buscalogo-agent/internal/extension"
 	"buscalogo-agent/internal/logx"
 	"buscalogo-agent/internal/openurl"
 	"buscalogo-agent/internal/p2p"
@@ -30,7 +32,6 @@ import (
 	"buscalogo-agent/internal/update"
 	"buscalogo-agent/internal/version"
 	"buscalogo-agent/internal/yggdrasil"
-	"buscalogo-agent/frontend"
 )
 
 type Server struct {
@@ -153,6 +154,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/scraper/clear", s.handleScraperClear)
 	mux.HandleFunc("GET /api/scraper/results", s.handleScraperResults)
 	mux.HandleFunc("DELETE /api/scraper/results/{docId}", s.handleScraperDeleteResult)
+	mux.HandleFunc("GET /api/scraper/lookup", s.handleScraperLookup)
+	mux.HandleFunc("GET /api/extension/info", s.handleExtensionInfo)
+	mux.HandleFunc("POST /api/extension/open-dir", s.handleExtensionOpenDir)
+	mux.HandleFunc("POST /api/extension/launch", s.handleExtensionLaunch)
+	mux.HandleFunc("POST /api/extension/shortcut", s.handleExtensionShortcut)
 	mux.HandleFunc("GET /api/p2p/status", s.handleP2PStatus)
 	mux.HandleFunc("GET /api/p2p/test-search", s.handleP2PTestSearch)
 	mux.HandleFunc("GET /api/p2p/config", s.handleP2PGetConfig)
@@ -196,15 +202,15 @@ func writeErr(w http.ResponseWriter, code int, format string, args ...any) {
 }
 
 type statusResp struct {
-	Node      config.Node      `json:"node"`
-	Version   string           `json:"version"`
-	DNSMode   string           `json:"dns_mode"`
-	Services  map[string]any   `json:"services"`
-	System    dns.SystemInfo   `json:"system"`
-	Web       webInfo          `json:"web"`
-	Systray   tray.EnvInfo     `json:"systray"`
-	Autostart bool             `json:"autostart"`
-	Config    config.Data      `json:"config"`
+	Node      config.Node    `json:"node"`
+	Version   string         `json:"version"`
+	DNSMode   string         `json:"dns_mode"`
+	Services  map[string]any `json:"services"`
+	System    dns.SystemInfo `json:"system"`
+	Web       webInfo        `json:"web"`
+	Systray   tray.EnvInfo   `json:"systray"`
+	Autostart bool           `json:"autostart"`
+	Config    config.Data    `json:"config"`
 }
 
 type webInfo struct {
@@ -235,7 +241,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"couchdb":   s.couchdb.Status(),
 			"scraper":   s.scraper.Status(),
 		},
-		System:   dns.Detect(s.cfg),
+		System: dns.Detect(s.cfg),
 		Web: webInfo{
 			Listen:         s.cfg.Web.Listen,
 			Port:           s.cfg.Web.Port,
@@ -451,6 +457,195 @@ func (s *Server) handleScraperDeleteResult(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Resultado removido"})
 }
 
+func (s *Server) handleScraperLookup(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSpace(r.URL.Query().Get("url"))
+	if raw == "" {
+		writeErr(w, http.StatusBadRequest, "url é obrigatória")
+		return
+	}
+	res, err := s.scraper.Lookup(raw)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    res,
+	})
+}
+
+func (s *Server) handleExtensionInfo(w http.ResponseWriter, r *http.Request) {
+	root := extensionInstallRoot()
+	chromeDir := filepath.Join(root, "chrome")
+	firefoxDir := filepath.Join(root, "firefox")
+	chromeBin, chromeErr := extension.FindChromium()
+	firefoxBin, firefoxErr := extension.FindFirefox()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"root": root,
+		"chrome": map[string]any{
+			"path":        chromeDir,
+			"ready":       extension.DirReady(chromeDir),
+			"browser_bin": chromeBin,
+			"browser_ok":  chromeErr == nil,
+			"one_click":   true,
+			"install":     "chrome://extensions",
+			"hint":        "Um clique abre o Chrome com a extensão já carregada (perfil BuscaLogo).",
+		},
+		"firefox": map[string]any{
+			"path":        firefoxDir,
+			"ready":       extension.DirReady(firefoxDir),
+			"browser_bin": firefoxBin,
+			"browser_ok":  firefoxErr == nil,
+			"one_click":   false,
+			"install":     "about:debugging#/runtime/this-firefox",
+			"hint":        "Abre o Firefox, copia o caminho e a pasta — falta só “Carregar extensão temporária”.",
+		},
+	})
+}
+
+func (s *Server) handleExtensionOpenDir(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Browser string `json:"browser"`
+		OpenUI  bool   `json:"open_ui"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	browser := strings.ToLower(strings.TrimSpace(body.Browser))
+	if browser == "" {
+		browser = "chrome"
+	}
+	if browser != "chrome" && browser != "firefox" {
+		writeErr(w, http.StatusBadRequest, "browser deve ser chrome ou firefox")
+		return
+	}
+	dir := filepath.Join(extensionInstallRoot(), browser)
+	if !extension.DirReady(dir) {
+		writeErr(w, http.StatusNotFound, "extensão não encontrada em %s", dir)
+		return
+	}
+	if err := openurl.OpenPath(dir); err != nil {
+		writeErr(w, http.StatusInternalServerError, "abrir pasta: %v", err)
+		return
+	}
+	uiURL := ""
+	if body.OpenUI {
+		switch browser {
+		case "chrome":
+			uiURL = "chrome://extensions"
+		case "firefox":
+			uiURL = "about:debugging#/runtime/this-firefox"
+		}
+		if uiURL != "" {
+			if err := openurl.OpenBrowserPage(uiURL); err != nil {
+				s.buf.Warnf("api", "abrir página de extensões: %v", err)
+			}
+		}
+	}
+	s.buf.Infof("api", "pasta da extensão aberta: %s", dir)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"path":   dir,
+		"ui_url": uiURL,
+	})
+}
+
+func (s *Server) handleExtensionLaunch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Browser string `json:"browser"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	browser := strings.ToLower(strings.TrimSpace(body.Browser))
+	if browser == "" {
+		browser = "chrome"
+	}
+	dir := filepath.Join(extensionInstallRoot(), browser)
+	switch browser {
+	case "chrome":
+		bin, profile, err := extension.LaunchChrome(dir)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		s.buf.Infof("api", "Chrome lançado com extensão (%s, perfil=%s)", bin, profile)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"mode":    "load-extension",
+			"browser": bin,
+			"profile": profile,
+			"path":    dir,
+			"message": "Chrome aberto com a extensão BuscaLogo já ativa.",
+		})
+	case "firefox":
+		bin, copied, err := extension.LaunchFirefoxGuide(dir)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		msg := "Firefox aberto em about:debugging. Clique em “Carregar extensão temporária” e escolha o manifest.json da pasta aberta."
+		if copied {
+			msg = "Caminho copiado para a área de transferência. No Firefox: Carregar extensão temporária → cole o caminho ou use a pasta aberta."
+		}
+		s.buf.Infof("api", "guia Firefox aberto (%s, clipboard=%v)", bin, copied)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":        true,
+			"mode":      "guide",
+			"browser":   bin,
+			"path":      dir,
+			"clipboard": copied,
+			"message":   msg,
+		})
+	default:
+		writeErr(w, http.StatusBadRequest, "browser deve ser chrome ou firefox")
+	}
+}
+
+func (s *Server) handleExtensionShortcut(w http.ResponseWriter, r *http.Request) {
+	dir := filepath.Join(extensionInstallRoot(), "chrome")
+	desktop, err := extension.EnsureChromeDesktopShortcut(dir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.buf.Infof("api", "atalho Chrome criado: %s", desktop)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"desktop": desktop,
+		"message": "Atalho “BuscaLogo no Chrome” adicionado ao menu de aplicativos.",
+	})
+}
+
+func extensionInstallRoot() string {
+	candidates := []string{"/opt/buscalogo/extension"}
+	if exe, err := os.Executable(); err == nil {
+		exe, _ = filepath.EvalSymlinks(exe)
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "extension"),
+			filepath.Join(dir, "..", "extension"),
+			filepath.Join(dir, "..", "exten"),
+			filepath.Join(dir, "..", "..", "exten"),
+		)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "extension"),
+			filepath.Join(wd, "..", "exten"),
+			filepath.Join(wd, "exten"),
+		)
+	}
+	for _, c := range candidates {
+		c = filepath.Clean(c)
+		if extension.DirReady(filepath.Join(c, "chrome")) || extension.DirReady(filepath.Join(c, "firefox")) {
+			return c
+		}
+	}
+	return "/opt/buscalogo/extension"
+}
+
+func extensionDirReady(dir string) bool {
+	return extension.DirReady(dir)
+}
+
 func (s *Server) handleP2PStatus(w http.ResponseWriter, r *http.Request) {
 	if s.p2p == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -501,7 +696,7 @@ func (s *Server) handleP2PPutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		YAML string     `json:"yaml"`
+		YAML string      `json:"yaml"`
 		P2P  *config.P2P `json:"p2p"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -775,18 +970,18 @@ func (s *Server) handleDNSStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"dns_mode":         s.cfg.DNS.Mode,
-		"listen":           s.cfg.DNS.Listen,
-		"port":             s.cfg.DNS.Port,
-		"external_listen":  s.cfg.DNS.ExternalListen,
-		"upstream":         s.cfg.DNS.Upstream,
-		"search_domains":   s.cfg.DNS.SearchDomains,
-		"yggdns":           s.cfg.Yggdrasil.DnsServers,
-		"yggdns_enabled":   s.cfg.Yggdrasil.Enabled && len(s.cfg.Yggdrasil.DnsServers) > 0,
-		"ygg_ip":           s.ygg.SelfAddress(),
-		"corefile":         corefile,
-		"system":           dns.Detect(s.cfg),
-		"coredns_status":   s.coredns.Status(),
+		"dns_mode":        s.cfg.DNS.Mode,
+		"listen":          s.cfg.DNS.Listen,
+		"port":            s.cfg.DNS.Port,
+		"external_listen": s.cfg.DNS.ExternalListen,
+		"upstream":        s.cfg.DNS.Upstream,
+		"search_domains":  s.cfg.DNS.SearchDomains,
+		"yggdns":          s.cfg.Yggdrasil.DnsServers,
+		"yggdns_enabled":  s.cfg.Yggdrasil.Enabled && len(s.cfg.Yggdrasil.DnsServers) > 0,
+		"ygg_ip":          s.ygg.SelfAddress(),
+		"corefile":        corefile,
+		"system":          dns.Detect(s.cfg),
+		"coredns_status":  s.coredns.Status(),
 	})
 }
 

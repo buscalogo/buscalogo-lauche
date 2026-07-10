@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"buscalogo-agent/internal/couchdb"
@@ -102,4 +104,40 @@ func (st *Store) Delete(docID string) error {
 		return err
 	}
 	return st.cdb.DeleteDoc(scrapingDB, docID, rev)
+}
+
+// LookupResult é o status de indexação de uma URL.
+type LookupResult struct {
+	Indexed   bool   `json:"indexed"`
+	DocID     string `json:"docId"`
+	URL       string `json:"url"`
+	Title     string `json:"title,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+func (st *Store) Lookup(rawURL string) (LookupResult, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	docID := docIDForURL(rawURL)
+	out := LookupResult{Indexed: false, DocID: docID, URL: rawURL}
+	if rawURL == "" {
+		return out, fmt.Errorf("url vazia")
+	}
+	body, _, err := st.cdb.GetDoc(scrapingDB, docID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return out, nil
+		}
+		return out, err
+	}
+	var doc StoredDoc
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return out, err
+	}
+	out.Indexed = true
+	out.Title = doc.Title
+	out.UpdatedAt = doc.UpdatedAt
+	if doc.URL != "" {
+		out.URL = doc.URL
+	}
+	return out, nil
 }

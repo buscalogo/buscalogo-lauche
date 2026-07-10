@@ -16,6 +16,9 @@ echo "Instalando BuscaLogo Agent em $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp -R "$SCRIPT_DIR/www" "$INSTALL_DIR/"
 cp -R "$SCRIPT_DIR/sites" "$INSTALL_DIR/"
+if [ -d "$SCRIPT_DIR/extension" ]; then
+  cp -R "$SCRIPT_DIR/extension" "$INSTALL_DIR/"
+fi
 cp "$SCRIPT_DIR/buscalogo-agent" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/buscalogo-agent.png" "$INSTALL_DIR/"
 chmod -R a+rX "$INSTALL_DIR"

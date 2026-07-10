@@ -1,0 +1,56 @@
+#buscalogo-agent-chip {
+  position: fixed;
+  z-index: 2147483646;
+  right: 16px;
+  bottom: 16px;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font: 13px/1.3 system-ui, -apple-system, Segoe UI, sans-serif;
+  color: #1a1a1a;
+  background: #fff8e7;
+  border: 1px solid #e0c080;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  max-width: min(280px, calc(100vw - 32px));
+}
+
+#buscalogo-agent-chip.bl-ok {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #1b5e20;
+}
+
+#buscalogo-agent-chip.bl-offline {
+  background: #ffebee;
+  border-color: #ef9a9a;
+  color: #b71c1c;
+}
+
+#buscalogo-agent-chip.bl-suggest {
+  background: #fff3e0;
+  border-color: #ffcc80;
+  color: #e65100;
+}
+
+#buscalogo-agent-chip a,
+#buscalogo-agent-chip button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: #1a1a1a;
+  color: #fff;
+  text-decoration: none;
+}
+
+#buscalogo-agent-chip.bl-suggest button {
+  background: #e65100;
+}
+
+#buscalogo-agent-chip a:hover,
+#buscalogo-agent-chip button:hover {
+  opacity: 0.9;
+}

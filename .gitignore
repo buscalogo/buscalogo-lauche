@@ -24,6 +24,8 @@ assets/linux/couchdb/
 dist/buscalogo-agent/
 dist/deb/
 dist/*.deb
+dist/*.deb.old
+dist/*.old
 dist/*.tar.gz
 
 # --- Logs ---
@@ -51,6 +53,9 @@ Thumbs.db
 # --- Temporários ---
 *.bak
 *.tmp
+
+# --- Extensão (zips de loja) ---
+extension/store/dist/
 
 # --- Neutralino desktop ---
 desktop/buscalogo-desktop/bin/

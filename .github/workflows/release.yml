@@ -37,7 +37,11 @@ jobs:
 
       - name: Build assets and package
         run: |
+          test -f extension/chrome/manifest.json
+          test -f extension/firefox/manifest.json
           make assets assets-couchdb deb VERSION=${{ steps.ver.outputs.version }}
+          dpkg-deb -c dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb | grep 'extension/chrome/manifest.json'
+          dpkg-deb -c dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb | grep 'extension/firefox/manifest.json'
         env:
           DEB_CODENAME: jammy
 

@@ -26,11 +26,15 @@ run: build
 	./$(APP)
 
 dist: build
+	$(require-extensions)
 	@rm -rf dist/$(APP)
 	@mkdir -p dist/$(APP)
 	@cp $(APP) dist/$(APP)/
 	@cp -R www dist/$(APP)/
 	@cp -R sites dist/$(APP)/
+	@mkdir -p dist/$(APP)/extension
+	@cp -a "$(EXTEN_DIR)/chrome" dist/$(APP)/extension/chrome
+	@cp -a "$(EXTEN_DIR)/firefox" dist/$(APP)/extension/firefox
 	@cp assets/icons/logo.png dist/$(APP)/buscalogo-agent.png
 	@cp dist/install.sh dist/$(APP)/install.sh
 	@chmod +x dist/$(APP)/install.sh
@@ -38,6 +42,7 @@ dist: build
 	@echo ">> Distribuição portátil: dist/$(APP)-linux-amd64.tar.gz"
 
 deb: build desktop-icons desktop-neutralino
+	$(require-extensions)
 	@cp -f $(DESKTOP_DIR)/neutralino.config.json /tmp/buscalogo-neutralino.config.bak
 	@sed 's/"version": "[^"]*"/"version": "$(VERSION)"/' $(DESKTOP_DIR)/neutralino.config.json > /tmp/buscalogo-neutralino.config.json
 	@mv /tmp/buscalogo-neutralino.config.json $(DESKTOP_DIR)/neutralino.config.json
@@ -55,6 +60,12 @@ deb: build desktop-icons desktop-neutralino
 	@chmod 755 dist/deb/opt/buscalogo/update-install.sh
 	@cp -R www dist/deb/opt/buscalogo/
 	@cp -R sites dist/deb/opt/buscalogo/
+	@mkdir -p dist/deb/opt/buscalogo/extension
+	@cp -a "$(EXTEN_DIR)/chrome" dist/deb/opt/buscalogo/extension/chrome
+	@cp -a "$(EXTEN_DIR)/firefox" dist/deb/opt/buscalogo/extension/firefox
+	@command -v zip >/dev/null && (cd dist/deb/opt/buscalogo/extension && zip -qr chrome.zip chrome && zip -qr firefox.zip firefox) || true
+	@test -f dist/deb/opt/buscalogo/extension/chrome/manifest.json
+	@test -f dist/deb/opt/buscalogo/extension/firefox/manifest.json
 	@cp assets/icons/logo.png dist/deb/opt/buscalogo/buscalogo-agent.png
 	@cp assets/linux/coredns dist/deb/opt/buscalogo/data/bin/coredns
 	@cp assets/linux/yggdrasil dist/deb/opt/buscalogo/data/bin/yggdrasil
@@ -72,6 +83,8 @@ deb: build desktop-icons desktop-neutralino
 	@chmod +x dist/deb/DEBIAN/postinst dist/deb/DEBIAN/postrm
 	@cd dist && fakeroot dpkg-deb --build deb $(APP)_$(VERSION)_amd64.deb
 	@echo ">> Pacote .deb: dist/$(APP)_$(VERSION)_amd64.deb"
+	@echo ">> Extensões no pacote:"
+	@dpkg-deb -c dist/$(APP)_$(VERSION)_amd64.deb | grep -E 'extension/.*/manifest.json' || (echo ">> ERRO: manifests ausentes no .deb"; exit 1)
 
 assets:
 	@echo ">> Baixando binários para $(ASSETS_DIR)/"
@@ -126,6 +139,22 @@ DESKTOP_DIR := desktop/buscalogo-desktop
 DESKTOP_ICONS := $(DESKTOP_DIR)/resources/icons
 LOGO_SRC := assets/icons/logo.png
 DAEMON_BIN := buscalogo-agentd
+# Extensões embutidas no repo (CI não tem ../exten). Fallback para sibling de desenvolvimento.
+EXTEN_DIR := $(firstword $(wildcard extension) $(wildcard ../exten))
+
+# Garante que chrome/firefox existam antes de empacotar.
+define require-extensions
+	@if [ -z "$(EXTEN_DIR)" ] || [ ! -f "$(EXTEN_DIR)/chrome/manifest.json" ]; then \
+		echo ">> Erro: extensão Chrome não encontrada (extension/chrome ou ../exten/chrome)"; \
+		echo ">> Copie de ../exten ou rode: cp -a ../exten/chrome ../exten/firefox extension/"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(EXTEN_DIR)/firefox/manifest.json" ]; then \
+		echo ">> Erro: extensão Firefox não encontrada em $(EXTEN_DIR)/firefox"; \
+		exit 1; \
+	fi
+	@echo ">> Extensões: $(EXTEN_DIR)/chrome + $(EXTEN_DIR)/firefox"
+endef
 
 desktop-icons:
 	@mkdir -p $(DESKTOP_ICONS)

@@ -14,14 +14,20 @@ if [ "$1" = "configure" ]; then
             mv "$FILELOG" "${FILELOG}.disabled" || true
         fi
     fi
-    chmod 0755 "$DIR/buscalogo-agent" "$DIR/buscalogo-agentd" 2>/dev/null || true
-    chmod 0755 "$DIR/data/bin/coredns" "$DIR/data/bin/yggdrasil" 2>/dev/null || true
-    chmod 0755 "$DIR/launch.sh" 2>/dev/null || true
-    if [ -f "$DIR/resources/icons/systrayIcon.png" ]; then
-        cp "$DIR/resources/icons/systrayIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
-    elif [ -f "$DIR/resources/icons/appIcon.png" ]; then
-        cp "$DIR/resources/icons/appIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
-    fi
-    chmod 0644 "$DIR/trayIcon.png" 2>/dev/null || true
+	chmod 0755 "$DIR/buscalogo-agent" "$DIR/buscalogo-agentd" 2>/dev/null || true
+	chmod 0755 "$DIR/data/bin/coredns" "$DIR/data/bin/yggdrasil" 2>/dev/null || true
+	chmod 0755 "$DIR/launch.sh" 2>/dev/null || true
+	if [ -d "$DIR/extension" ]; then
+		chmod -R a+rX "$DIR/extension"
+		echo "BuscaLogo: extensões em $DIR/extension/chrome e $DIR/extension/firefox"
+	else
+		echo "Aviso: pasta $DIR/extension ausente neste pacote" >&2
+	fi
+	if [ -f "$DIR/resources/icons/systrayIcon.png" ]; then
+		cp "$DIR/resources/icons/systrayIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
+	elif [ -f "$DIR/resources/icons/appIcon.png" ]; then
+		cp "$DIR/resources/icons/appIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
+	fi
+	chmod 0644 "$DIR/trayIcon.png" 2>/dev/null || true
 fi
 #DEBHELPER#

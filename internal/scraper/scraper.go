@@ -209,13 +209,24 @@ func stringsFromAny(list []any) []string {
 func (s *Service) AddTask(url, priority string, depth, maxDepth, scheduleDays int, discoveredFrom, taskType string) (string, error) {
 	eng := s.ensureEngine()
 	if !eng.Running() {
-		return "", fmt.Errorf("scraper parado — inicie o serviço primeiro")
+		s.buf.Infof("scraper", "scraper parado — iniciando automaticamente para enfileirar tarefa")
+		if err := s.Start(); err != nil {
+			return "", fmt.Errorf("iniciar scraper: %w", err)
+		}
+		eng = s.ensureEngine()
 	}
 	p := Priority(priority)
 	if p == "" {
 		p = PriorityNormal
 	}
 	return eng.AddToQueue(url, p, depth, maxDepth, scheduleDays, discoveredFrom, taskType)
+}
+
+func (s *Service) Lookup(rawURL string) (LookupResult, error) {
+	if s.store == nil {
+		return LookupResult{}, fmt.Errorf("CouchDB indisponível")
+	}
+	return s.store.Lookup(rawURL)
 }
 
 func (s *Service) ListResults(limit int) ([]StoredDoc, error) {

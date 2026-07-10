@@ -400,6 +400,28 @@
     </div>
   </div>
 
+  <div class="card" id="card-extension-install">
+    <div class="card-head"><h2>Extensão do navegador</h2></div>
+    <div class="card-body">
+      <p style="margin:0 0 10px">Use a extensão para ver se a página está indexada e sugerir ao scraper — sem passar pela loja.</p>
+      <p id="ext-chrome-hint" class="hint" style="margin:0 0 8px">Chrome: um clique abre o navegador com a extensão já ativa (perfil BuscaLogo).</p>
+      <p id="ext-firefox-hint" class="hint" style="margin:0 0 12px">Firefox: abre a tela certa e copia o caminho — falta só carregar o <code>manifest.json</code>.</p>
+      <div class="kv"><span>Pasta</span><b id="ext-root-path" class="mono" style="font-size:12px;word-break:break-all">—</b></div>
+      <div class="kv"><span>Chrome</span><b id="ext-chrome-ready">—</b></div>
+      <div class="kv"><span>Firefox</span><b id="ext-firefox-ready">—</b></div>
+      <p id="ext-launch-msg" class="hint" style="margin:12px 0 0;display:none"></p>
+    </div>
+    <div class="card-footer">
+      <div class="actions">
+        <button id="ext-launch-chrome" class="btn green" type="button">Abrir Chrome com extensão</button>
+        <button id="ext-shortcut-chrome" class="btn" type="button">Criar atalho no menu</button>
+        <button id="ext-launch-firefox" class="btn" type="button">Preparar Firefox</button>
+        <button id="ext-open-chrome-dir" class="btn small" type="button">Abrir pasta</button>
+        <button id="ext-refresh-info" class="btn small" type="button">Atualizar</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-head">
       <h2>Resultados recentes</h2>

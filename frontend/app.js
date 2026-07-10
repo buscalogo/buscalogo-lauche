@@ -27,7 +27,10 @@ document.querySelectorAll(".tab").forEach(tab => {
     tab.classList.add("active");
     const panel = document.getElementById("tab-" + tab.dataset.tab);
     if (panel) panel.classList.add("active");
-    if (tab.dataset.tab === "scraper") refreshScraperInfo();
+    if (tab.dataset.tab === "scraper") {
+      refreshScraperInfo();
+      refreshExtensionInfo();
+    }
   });
 });
 
@@ -579,6 +582,94 @@ async function clearScraperQueue() {
   }
 }
 
+async function refreshExtensionInfo() {
+  try {
+    const r = await fetch("/api/extension/info");
+    const d = await r.json();
+    const rootEl = $("#ext-root-path");
+    const chromeEl = $("#ext-chrome-ready");
+    const firefoxEl = $("#ext-firefox-ready");
+    if (rootEl) rootEl.textContent = d.root || "\u2014";
+    if (chromeEl) {
+      const parts = [];
+      parts.push(d.chrome?.ready ? "pronta" : "não encontrada");
+      if (d.chrome?.browser_ok) parts.push("navegador ok");
+      else parts.push("navegador não encontrado");
+      chromeEl.textContent = parts.join(" · ");
+    }
+    if (firefoxEl) {
+      const parts = [];
+      parts.push(d.firefox?.ready ? "pronta" : "não encontrada");
+      if (d.firefox?.browser_ok) parts.push("navegador ok");
+      else parts.push("navegador não encontrado");
+      firefoxEl.textContent = parts.join(" · ");
+    }
+    const launchChrome = $("#ext-launch-chrome");
+    const shortcut = $("#ext-shortcut-chrome");
+    const launchFirefox = $("#ext-launch-firefox");
+    const openDir = $("#ext-open-chrome-dir");
+    if (launchChrome) launchChrome.disabled = !(d.chrome?.ready && d.chrome?.browser_ok);
+    if (shortcut) shortcut.disabled = !(d.chrome?.ready && d.chrome?.browser_ok);
+    if (launchFirefox) launchFirefox.disabled = !(d.firefox?.ready && d.firefox?.browser_ok);
+    if (openDir) openDir.disabled = !d.chrome?.ready && !d.firefox?.ready;
+  } catch {
+    const rootEl = $("#ext-root-path");
+    if (rootEl) rootEl.textContent = "erro ao consultar";
+  }
+}
+
+function showExtMsg(text) {
+  const el = $("#ext-launch-msg");
+  if (!el) return;
+  el.style.display = text ? "block" : "none";
+  el.textContent = text || "";
+}
+
+async function launchExtension(browser) {
+  showExtMsg("");
+  try {
+    const r = await fetch("/api/extension/launch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browser }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "falha");
+    showExtMsg(d.message || "Pronto.");
+    toast(browser === "chrome" ? "Chrome aberto com a extensão" : "Firefox preparado");
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+    showExtMsg(String(e.message || e));
+  }
+}
+
+async function createChromeShortcut() {
+  try {
+    const r = await fetch("/api/extension/shortcut", { method: "POST" });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "falha");
+    toast(d.message || "Atalho criado");
+    showExtMsg(d.message + (d.desktop ? " (" + d.desktop + ")" : ""));
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function openExtensionDir(browser) {
+  try {
+    const r = await fetch("/api/extension/open-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browser: browser || "chrome", open_ui: false }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "falha");
+    toast("Pasta aberta");
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
 async function refreshCouchInfo() {
   try {
     const r = await fetch("/api/couchdb/info");
@@ -1109,6 +1200,11 @@ document.addEventListener("click", (ev) => {
   if (ev.target.id === "scraper-add-url") addScraperURL();
   if (ev.target.id === "scraper-clear-queue") clearScraperQueue();
   if (ev.target.id === "scraper-refresh-results") refreshScraperInfo();
+  if (ev.target.id === "ext-launch-chrome") launchExtension("chrome");
+  if (ev.target.id === "ext-launch-firefox") launchExtension("firefox");
+  if (ev.target.id === "ext-shortcut-chrome") createChromeShortcut();
+  if (ev.target.id === "ext-open-chrome-dir") openExtensionDir("chrome");
+  if (ev.target.id === "ext-refresh-info") refreshExtensionInfo();
   if (ev.target.id === "p2p-reconnect") doP2PReconnect();
   if (ev.target.id === "p2p-cfg-save-simple") saveP2PConfigSimple();
   if (ev.target.id === "p2p-cfg-save-advanced") saveP2PConfigAdvanced();
