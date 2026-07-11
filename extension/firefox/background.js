@@ -1,9 +1,12 @@
 if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThis.chrome = browser; }
-const AGENT_ORIGINS = [
+const LOOPBACK_ORIGINS = [
   "http://127.0.0.1:9970/*",
   "http://localhost:9970/*",
 ];
+const BL_ORIGINS = ["http://*.bl/*"];
+const AGENT_ORIGINS = [...LOOPBACK_ORIGINS, ...BL_ORIGINS];
 const AGENT_CANDIDATES = [
+  "http://buscalogo.bl/__buscalogo_agent__",
   "http://127.0.0.1:9970",
   "http://localhost:9970",
 ];
@@ -19,6 +22,10 @@ function isHttpUrl(url) {
   } catch {
     return false;
   }
+}
+
+function isBlHost(hostname) {
+  return typeof hostname === "string" && /\.bl$/i.test(hostname);
 }
 
 async function getSettings() {
@@ -47,8 +54,14 @@ async function requestOrigins(origins) {
   }
 }
 
+async function hasAgentAccess() {
+  return (
+    (await hasOrigins(LOOPBACK_ORIGINS)) || (await hasOrigins(BL_ORIGINS))
+  );
+}
+
 async function ensureAgentHosts() {
-  if (await hasOrigins(AGENT_ORIGINS)) return true;
+  if (await hasAgentAccess()) return true;
   return requestOrigins(AGENT_ORIGINS);
 }
 
@@ -124,12 +137,8 @@ function buildFetchOptions(options = {}) {
   if (method !== "GET" && method !== "HEAD" && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const opts = {
-    ...options,
-    method,
-    headers,
-  };
-  // Chrome/Firefox Local Network Access (loopback)
+  const opts = { method, headers };
+  if (options.body != null) opts.body = options.body;
   try {
     opts.targetAddressSpace = "loopback";
   } catch {
@@ -138,74 +147,106 @@ function buildFetchOptions(options = {}) {
   return opts;
 }
 
-async function agentFetch(path, options = {}) {
-  await ensureAgentHosts();
+async function rawFetch(base, path, options = {}) {
   const fetchOpts = buildFetchOptions(options);
-  const bases = [agentBase, ...AGENT_CANDIDATES.filter((b) => b !== agentBase)];
-  let lastErr = null;
+  // Proxy em *.bl não é loopback “direto” do ponto de vista do documento .bl
+  if (base.includes("/__buscalogo_agent__") || /\.bl(?::\d+)?$/i.test(new URL(base, "http://x").hostname || "")) {
+    delete fetchOpts.targetAddressSpace;
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const r = await fetch(`${base}${path}`, { ...fetchOpts, signal: ctrl.signal });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data, base };
+  } finally {
+    clearTimeout(t);
+  }
+}
 
-  for (const base of bases) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 5000);
-    try {
-      const r = await fetch(`${base}${path}`, {
-        ...fetchOpts,
-        signal: ctrl.signal,
-      });
-      const data = await r.json().catch(() => ({}));
-      agentBase = base;
-      return { ok: r.ok, status: r.status, data, base };
-    } catch (e) {
-      lastErr = e;
-    } finally {
-      clearTimeout(t);
+/** Pede ao content script da aba ativa para falar com o Agent via same-origin (.bl). */
+async function fetchViaActiveBlTab(path, options = {}) {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab?.id || !tab.url) return null;
+  let host = "";
+  try {
+    host = new URL(tab.url).hostname;
+  } catch {
+    return null;
+  }
+  if (!isBlHost(host)) return null;
+  try {
+    return await chrome.tabs.sendMessage(tab.id, {
+      type: "BL_AGENT_FETCH",
+      path,
+      method: options.method || "GET",
+      body: options.body || null,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function agentFetch(path, options = {}) {
+  await ensureAgentHosts().catch(() => false);
+
+  // Via content script em aba *.bl (Firefox bloqueia fetch direto a 127.0.0.1).
+  // Não usar quando o pedido veio do próprio content (evita deadlock).
+  if (!options.skipViaTab) {
+    const viaTab = await fetchViaActiveBlTab(path, options);
+    if (viaTab && !viaTab.error && (viaTab.ok || viaTab.status > 0)) {
+      if (viaTab.base) agentBase = viaTab.base;
+      return viaTab;
     }
   }
-  const msg = lastErr?.message || String(lastErr || "agente inacessível");
-  throw new Error(msg);
+
+  const bases = [];
+  for (const b of [agentBase, ...AGENT_CANDIDATES]) {
+    if (b && !bases.includes(b)) bases.push(b);
+  }
+
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const res = await rawFetch(base, path, options);
+      agentBase = base;
+      return res;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("agente inacessível");
 }
 
 async function pingAgent() {
-  try {
-    const { ok, status } = await agentFetch("/api/version");
-    return ok || status === 200;
-  } catch {
-    try {
-      const { ok } = await agentFetch("/api/status");
-      return ok;
-    } catch {
-      return false;
-    }
-  }
+  return pingAgentWithOpts();
 }
 
-async function lookupUrl(url) {
+async function lookupUrl(url, fetchOpts = {}) {
   if (!isHttpUrl(url)) {
     return { offline: false, indexed: false, skipped: true };
   }
 
-  try {
-    await ensureAgentHosts();
-  } catch {
-    // ignore
-  }
-
-  const online = await pingAgent();
+  const online = await pingAgentWithOpts(fetchOpts);
   if (!online) {
-    const hasHost = await hasOrigins(AGENT_ORIGINS);
+    const hasHost = await hasAgentAccess();
     return {
       offline: true,
       indexed: false,
       need_agent_permission: !hasHost,
       error: hasHost
-        ? "Não foi possível conectar em 127.0.0.1:9970. Confirme se o BuscaLogo Agent está rodando."
+        ? "Não foi possível conectar ao Agent. No Firefox, use um site .bl (proxy local) ou permita acesso a 127.0.0.1."
         : "Sem permissão para acessar o Agent local. Clique em “Permitir Agent local”.",
     };
   }
 
   try {
     const q = encodeURIComponent(url);
-    const { ok, data, status } = await agentFetch(`/api/scraper/lookup?url=${q}`);
+    const { ok, data, status } = await agentFetch(
+      `/api/scraper/lookup?url=${q}`,
+      fetchOpts
+    );
     if (!ok || !data?.success) {
       return {
         offline: false,
@@ -217,11 +258,21 @@ async function lookupUrl(url) {
     }
     return { offline: false, indexed: !!data.data?.indexed, ...data.data };
   } catch (e) {
-    return {
-      offline: true,
-      indexed: false,
-      error: String(e.message || e),
-    };
+    return { offline: true, indexed: false, error: String(e.message || e) };
+  }
+}
+
+async function pingAgentWithOpts(fetchOpts = {}) {
+  try {
+    const { ok, status } = await agentFetch("/api/version", fetchOpts);
+    return ok || status === 200;
+  } catch {
+    try {
+      const { ok } = await agentFetch("/api/status", fetchOpts);
+      return ok;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -271,7 +322,7 @@ async function refreshTab(tabId, url) {
     try {
       await chrome.tabs.sendMessage(tabId, { type: "BL_LOOKUP", result, url });
     } catch {
-      // content script pode não estar injetado nesta aba ainda
+      // ignore
     }
   }
   return result;
@@ -295,6 +346,17 @@ chrome.permissions.onRemoved.addListener(() => {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
+    if (msg?.type === "BL_LOOKUP_RESULT") {
+      const tabId = sender.tab?.id;
+      const result = msg.result || {};
+      if (tabId != null) {
+        if (result.offline) setBadge(tabId, "offline");
+        else if (result.indexed) setBadge(tabId, "indexed");
+        else if (!result.skipped) setBadge(tabId, "suggest");
+      }
+      sendResponse({ ok: true });
+      return;
+    }
     if (msg?.type === "BL_LOOKUP_REQUEST") {
       const url = msg.url || sender.tab?.url;
       const tabId = sender.tab?.id;
@@ -302,7 +364,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ offline: true, error: "Sem URL" });
         return;
       }
-      const result = await lookupUrl(url);
+      // Pedido do content script: não reenviar fetch para a mesma aba.
+      const result = await lookupUrl(url, {
+        skipViaTab: sender.tab?.id != null,
+      });
       if (tabId != null) {
         if (result.offline) setBadge(tabId, "offline");
         else if (result.indexed) setBadge(tabId, "indexed");
@@ -322,14 +387,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg?.type === "BL_GET_SETTINGS") {
       const settings = await getSettings();
-      const permission = await hasPageOrigins();
-      const agentPermission = await hasOrigins(AGENT_ORIGINS);
-      const online = await pingAgent();
       sendResponse({
         ...settings,
-        permission,
-        agentPermission,
-        online,
+        permission: await hasPageOrigins(),
+        agentPermission: await hasAgentAccess(),
+        online: await pingAgent(),
         agent: agentBase,
       });
       return;
@@ -346,7 +408,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ? "Permissão ao Agent local negada."
           : online
             ? ""
-            : "Permissão ok, mas o Agent não respondeu em 127.0.0.1:9970.",
+            : "Permissão ok, mas o Agent não respondeu. Abra http://buscalogo.bl e tente de novo.",
       });
       return;
     }
@@ -365,22 +427,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
       }
-      const sync = await setPageAlertEnabled(want);
-      sendResponse(sync);
+      sendResponse(await setPageAlertEnabled(want));
       return;
     }
     if (msg?.type === "BL_AGENT_STATUS") {
       sendResponse({
         online: await pingAgent(),
         agent: agentBase,
-        agentPermission: await hasOrigins(AGENT_ORIGINS),
+        agentPermission: await hasAgentAccess(),
       });
     }
   })().catch((e) => {
     try {
       sendResponse({ ok: false, offline: true, error: String(e.message || e) });
     } catch {
-      // canal fechado
+      // ignore
     }
   });
   return true;

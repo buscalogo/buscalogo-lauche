@@ -63,10 +63,26 @@ jobs:
           EOF
           cat dist/manifest.json
 
+      - name: Pack extension zips for release
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p dist
+          (cd extension && zip -qr "../dist/buscalogo-agent-${VERSION}-chrome.zip" chrome -x 'chrome/.DS_Store')
+          (cd extension && zip -qr "../dist/buscalogo-agent-${VERSION}-firefox.zip" firefox -x 'firefox/.DS_Store')
+          test -f "dist/buscalogo-agent-${VERSION}-chrome.zip"
+          test -f "dist/buscalogo-agent-${VERSION}-firefox.zip"
+          # Também copia os zips embutidos no .deb (se existirem)
+          dpkg-deb -x "dist/buscalogo-agent_${VERSION}_amd64.deb" /tmp/bl-deb-check
+          test -f /tmp/bl-deb-check/opt/buscalogo/extension/chrome/manifest.json
+          test -f /tmp/bl-deb-check/opt/buscalogo/extension/firefox/manifest.json
+          ls -la /tmp/bl-deb-check/opt/buscalogo/extension/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb
             dist/manifest.json
+            dist/buscalogo-agent-${{ steps.ver.outputs.version }}-chrome.zip
+            dist/buscalogo-agent-${{ steps.ver.outputs.version }}-firefox.zip
           generate_release_notes: true

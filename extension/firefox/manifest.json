@@ -1,18 +1,20 @@
 {
   "manifest_version": 3,
   "name": "BuscaLogo Agent",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Verifica se a página está indexada no BuscaLogo Agent local e sugere adicionar à busca.",
   "homepage_url": "https://buscalogo.com",
   "author": "BuscaLogo",
   "permissions": ["tabs", "storage", "scripting"],
   "host_permissions": [
     "http://127.0.0.1:9970/*",
-    "http://localhost:9970/*"
+    "http://localhost:9970/*",
+    "http://*.bl/*"
   ],
   "optional_permissions": [
     "http://127.0.0.1:9970/*",
     "http://localhost:9970/*",
+    "http://*.bl/*",
     "http://*/*",
     "https://*/*"
   ],

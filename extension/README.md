@@ -2,6 +2,8 @@
 
 Verifica se a página aberta está indexada no **BuscaLogo Agent** local (`http://127.0.0.1:9970`) e permite sugerir a indexação.
 
+No Firefox, em sites `*.bl` a extensão usa o proxy same-origin `/__buscalogo_agent__/` (servido pelo Agent) para contornar o bloqueio de acesso a `127.0.0.1`.
+
 ## Pastas
 
 | Pasta | Uso |

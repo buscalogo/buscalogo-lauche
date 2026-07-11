@@ -151,8 +151,15 @@ func (m *Manager) ResolveRoot(root string) string {
 }
 
 // Handler roteia por Host: static files ou proxy reverso.
+// Prefixo reservado /__buscalogo_agent__/ espelha a API local (9970) para a
+// extensão contornar bloqueios de loopback do Firefox (same-origin em *.bl).
 func (m *Manager) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, agentAPIPrefix) {
+			m.serveAgentAPIProxy(w, r)
+			return
+		}
+
 		host := hostOnly(r.Host)
 		site := m.findSite(host)
 		if site == nil || !site.Enabled {
@@ -177,6 +184,50 @@ func (m *Manager) Handler() http.Handler {
 			m.serveStatic(w, r, site)
 		}
 	})
+}
+
+const agentAPIPrefix = "/__buscalogo_agent__/"
+
+func (m *Manager) serveAgentAPIProxy(w http.ResponseWriter, r *http.Request) {
+	// CORS para content scripts / popup da extensão.
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Vary", "Origin")
+	} else {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	apiListen := m.cfg.API.Listen
+	if apiListen == "" {
+		apiListen = "127.0.0.1:9970"
+	}
+	target, err := url.Parse("http://" + apiListen + "/")
+	if err != nil {
+		http.Error(w, "API listen inválido", http.StatusInternalServerError)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Director = func(req *http.Request) {
+		path := strings.TrimPrefix(req.URL.Path, "/__buscalogo_agent__")
+		if path == "" {
+			path = "/"
+		}
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = path
+		req.Host = target.Host
+		// Remove hop-by-hop headers that confuse o reverse proxy local.
+		req.Header.Del("Accept-Encoding")
+	}
+	proxy.ServeHTTP(w, r)
 }
 
 func (m *Manager) findSite(host string) *Site {

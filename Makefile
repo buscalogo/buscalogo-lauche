@@ -139,14 +139,16 @@ DESKTOP_DIR := desktop/buscalogo-desktop
 DESKTOP_ICONS := $(DESKTOP_DIR)/resources/icons
 LOGO_SRC := assets/icons/logo.png
 DAEMON_BIN := buscalogo-agentd
-# Extensões embutidas no repo (CI não tem ../exten). Fallback para sibling de desenvolvimento.
-EXTEN_DIR := $(firstword $(wildcard extension) $(wildcard ../exten))
+# Extensões embutidas no repo (caminho absoluto — CI e builds fora do cwd).
+# Fallback: sibling ../exten em desenvolvimento local.
+MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+EXTEN_DIR := $(if $(wildcard $(MAKEFILE_DIR)extension/chrome/manifest.json),$(MAKEFILE_DIR)extension,$(abspath $(MAKEFILE_DIR)../exten))
 
 # Garante que chrome/firefox existam antes de empacotar.
 define require-extensions
-	@if [ -z "$(EXTEN_DIR)" ] || [ ! -f "$(EXTEN_DIR)/chrome/manifest.json" ]; then \
-		echo ">> Erro: extensão Chrome não encontrada (extension/chrome ou ../exten/chrome)"; \
-		echo ">> Copie de ../exten ou rode: cp -a ../exten/chrome ../exten/firefox extension/"; \
+	@if [ ! -f "$(EXTEN_DIR)/chrome/manifest.json" ]; then \
+		echo ">> Erro: extensão Chrome não encontrada em $(EXTEN_DIR)/chrome"; \
+		echo ">> Esperado: extension/chrome no repo (ou ../exten/chrome)"; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(EXTEN_DIR)/firefox/manifest.json" ]; then \
