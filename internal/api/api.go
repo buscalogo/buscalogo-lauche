@@ -90,10 +90,10 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
-// corsLocal permite requisições do shell Neutralino (origem localhost em outra porta).
+// corsLocal permite o shell Neutralino, extensões do navegador e páginas *.bl.
 func (s *Server) corsLocal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); isLocalOrigin(origin) {
+		if origin := r.Header.Get("Origin"); isAllowedCORSOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -107,7 +107,7 @@ func (s *Server) corsLocal(next http.Handler) http.Handler {
 	})
 }
 
-func isLocalOrigin(origin string) bool {
+func isAllowedCORSOrigin(origin string) bool {
 	if origin == "" {
 		return false
 	}
@@ -115,12 +115,24 @@ func isLocalOrigin(origin string) bool {
 	if err != nil {
 		return false
 	}
-	switch u.Hostname() {
-	case "127.0.0.1", "localhost", "::1":
+	switch u.Scheme {
+	case "chrome-extension", "moz-extension":
 		return true
+	case "http", "https":
+		host := strings.ToLower(u.Hostname())
+		switch host {
+		case "127.0.0.1", "localhost", "::1":
+			return true
+		}
+		return strings.HasSuffix(host, ".bl")
 	default:
 		return false
 	}
+}
+
+// isLocalOrigin mantido para callers legados; preferir isAllowedCORSOrigin.
+func isLocalOrigin(origin string) bool {
+	return isAllowedCORSOrigin(origin)
 }
 
 func (s *Server) routes(mux *http.ServeMux) {

@@ -6,9 +6,9 @@ const LOOPBACK_ORIGINS = [
 const BL_ORIGINS = ["http://*.bl/*"];
 const AGENT_ORIGINS = [...LOOPBACK_ORIGINS, ...BL_ORIGINS];
 const AGENT_CANDIDATES = [
-  "http://buscalogo.bl/__buscalogo_agent__",
   "http://127.0.0.1:9970",
   "http://localhost:9970",
+  "http://buscalogo.bl/__buscalogo_agent__",
 ];
 const SCRIPT_ID = "buscalogo-page-alert";
 const PAGE_ORIGINS = ["http://*/*", "https://*/*"];
@@ -148,6 +148,10 @@ function buildFetchOptions(options = {}) {
 }
 
 async function rawFetch(base, path, options = {}) {
+  // Nunca usar https://*.bl — o Agent só escuta HTTP :80.
+  if (/^https:\/\/[^/]+\.bl\b/i.test(base)) {
+    base = base.replace(/^https:/i, "http:");
+  }
   const fetchOpts = buildFetchOptions(options);
   // Proxy em *.bl não é loopback “direto” do ponto de vista do documento .bl
   if (base.includes("/__buscalogo_agent__") || /\.bl(?::\d+)?$/i.test(new URL(base, "http://x").hostname || "")) {
@@ -196,7 +200,7 @@ async function agentFetch(path, options = {}) {
   if (!options.skipViaTab) {
     const viaTab = await fetchViaActiveBlTab(path, options);
     if (viaTab && !viaTab.error && (viaTab.ok || viaTab.status > 0)) {
-      if (viaTab.base) agentBase = viaTab.base;
+      if (viaTab.base && !/^https:/i.test(viaTab.base)) agentBase = viaTab.base;
       return viaTab;
     }
   }

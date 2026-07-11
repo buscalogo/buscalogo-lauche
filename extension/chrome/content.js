@@ -1,9 +1,18 @@
 (function () {
   const ID = "buscalogo-agent-chip";
-  const PROXY = "/__buscalogo_agent__";
+  const PROXY_PATH = "/__buscalogo_agent__";
 
   function isBlHost() {
     return /\.bl$/i.test(location.hostname);
+  }
+
+  /** Agent só serve HTTP em *.bl; HTTPS-Only do Firefox quebra same-origin. */
+  function canUsePageProxy() {
+    return isBlHost() && location.protocol === "http:";
+  }
+
+  function proxyBase() {
+    return "http://" + location.host + PROXY_PATH;
   }
 
   function ensureChip() {
@@ -51,8 +60,8 @@
       btn.disabled = true;
       btn.textContent = "…";
       try {
-        if (isBlHost()) {
-          const r = await fetch(PROXY + "/api/scraper/tasks", {
+        if (canUsePageProxy()) {
+          const r = await fetch(proxyBase() + "/api/scraper/tasks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -82,27 +91,27 @@
   }
 
   async function proxyFetch(path, method, body) {
+    if (!canUsePageProxy()) {
+      throw new Error("proxy só em http://*.bl");
+    }
     const opts = { method: method || "GET", headers: {} };
     if (method && method !== "GET" && method !== "HEAD") {
       opts.headers["Content-Type"] = "application/json";
       if (body) opts.body = typeof body === "string" ? body : JSON.stringify(body);
     }
-    const r = await fetch(PROXY + path, opts);
+    const base = proxyBase();
+    const r = await fetch(base + path, opts);
     const data = await r.json().catch(() => ({}));
-    return {
-      ok: r.ok,
-      status: r.status,
-      data,
-      base: location.origin + PROXY,
-    };
+    return { ok: r.ok, status: r.status, data, base };
   }
 
   async function lookupViaProxy(pageUrl) {
     try {
-      const ver = await fetch(PROXY + "/api/version");
+      const base = proxyBase();
+      const ver = await fetch(base + "/api/version");
       if (!ver.ok) throw new Error("Agent offline");
       const q = encodeURIComponent(pageUrl);
-      const r = await fetch(PROXY + "/api/scraper/lookup?url=" + q);
+      const r = await fetch(base + "/api/scraper/lookup?url=" + q);
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data?.success) {
         return {
@@ -131,8 +140,12 @@
       return;
     }
     if (msg?.type === "BL_AGENT_FETCH") {
-      if (!isBlHost()) {
-        sendResponse({ ok: false, status: 0, error: "not a .bl page" });
+      if (!canUsePageProxy()) {
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: "proxy só em http://*.bl (HTTPS-Only bloqueia)",
+        });
         return;
       }
       proxyFetch(msg.path, msg.method, msg.body)
@@ -147,19 +160,30 @@
   (async () => {
     const url = location.href;
     let result;
-    if (isBlHost()) {
-      // Same-origin via proxy — evita bloqueio Firefox a 127.0.0.1 e deadlock com o background.
+    if (canUsePageProxy()) {
       result = await lookupViaProxy(url);
-      try {
-        await chrome.runtime.sendMessage({
-          type: "BL_LOOKUP_RESULT",
-          url,
-          result,
-        });
-      } catch {
-        // ignore
+      if (result?.offline) {
+        try {
+          result = await chrome.runtime.sendMessage({
+            type: "BL_LOOKUP_REQUEST",
+            url,
+          });
+        } catch {
+          // keep proxy offline result
+        }
+      } else {
+        try {
+          await chrome.runtime.sendMessage({
+            type: "BL_LOOKUP_RESULT",
+            url,
+            result,
+          });
+        } catch {
+          // ignore
+        }
       }
     } else {
+      // https://*.bl (HTTPS-Only) ou páginas normais → background + CORS na API
       try {
         result = await chrome.runtime.sendMessage({
           type: "BL_LOOKUP_REQUEST",
