@@ -36,17 +36,84 @@
   </div>
 </div>
 
-<nav class="tabs">
+<nav class="tabs" id="app-tabs">
   <button class="tab active" data-tab="dashboard">Visão Geral</button>
   <button class="tab" data-tab="network">Rede</button>
   <button class="tab" data-tab="dns">DNS</button>
   <button class="tab" data-tab="sites">Sites</button>
   <button class="tab" data-tab="scraper">Scraper</button>
+  <button class="tab" data-tab="profile">Perfil</button>
   <button class="tab" data-tab="config">Configurações</button>
   <button class="tab" data-tab="logs">Logs</button>
 </nav>
 
-<main>
+<!-- Gate: sem conta = cadastro; com conta sem login = login -->
+<div id="setup-gate" class="setup-gate" style="display:none" aria-hidden="true">
+  <div class="setup-gate-card" id="setup-panel-register">
+    <img src="/logo.png" alt="BuscaLogo" width="56" height="56">
+    <h2>Crie sua conta</h2>
+    <p>No primeiro uso é obrigatório cadastrar uma conta local. Os scrapes serão assinados com sua chave — assim quem busca sabe de quem é o índice.</p>
+    <div class="form" style="gap:10px;text-align:left">
+      <label>Usuário
+        <input id="setup-username" type="text" autocomplete="username" minlength="2" placeholder="mín. 2 caracteres">
+      </label>
+      <label>Senha
+        <input id="setup-password" type="password" autocomplete="new-password" minlength="6" placeholder="mín. 6 caracteres">
+      </label>
+      <label>Confirmar senha
+        <input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="6" placeholder="repita a senha">
+      </label>
+    </div>
+    <div class="actions" style="margin-top:14px;flex-wrap:wrap;justify-content:center">
+      <button id="setup-register" class="btn green" type="button">Criar conta e continuar</button>
+    </div>
+    <details style="margin-top:16px;text-align:left">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px">Já tenho backup JSON</summary>
+      <div class="form" style="margin-top:10px;gap:10px">
+        <label>Arquivo
+          <input id="setup-import-file" type="file" accept="application/json,.json">
+        </label>
+        <label>Nova senha
+          <input id="setup-import-password" type="password" minlength="6" placeholder="nova senha">
+        </label>
+        <button id="setup-import" class="btn" type="button">Importar e continuar</button>
+      </div>
+    </details>
+    <p id="setup-msg" class="hint" style="margin:12px 0 0;display:none"></p>
+  </div>
+
+  <div class="setup-gate-card" id="setup-panel-login" style="display:none">
+    <img src="/logo.png" alt="BuscaLogo" width="56" height="56">
+    <h2>Entrar</h2>
+    <p>Faça login para liberar o Agent. Seus scrapes serão assinados com a chave desta conta.</p>
+    <div class="form" style="gap:10px;text-align:left">
+      <label>Usuário
+        <input id="gate-login-username" type="text" autocomplete="username" minlength="2" placeholder="seu usuário">
+      </label>
+      <label>Senha
+        <input id="gate-login-password" type="password" autocomplete="current-password" minlength="6" placeholder="sua senha">
+      </label>
+    </div>
+    <div class="actions" style="margin-top:14px;flex-wrap:wrap;justify-content:center">
+      <button id="gate-login" class="btn green" type="button">Entrar e continuar</button>
+    </div>
+    <details style="margin-top:16px;text-align:left">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px">Recuperar com backup JSON</summary>
+      <div class="form" style="margin-top:10px;gap:10px">
+        <label>Arquivo
+          <input id="gate-import-file" type="file" accept="application/json,.json">
+        </label>
+        <label>Nova senha
+          <input id="gate-import-password" type="password" minlength="6" placeholder="nova senha">
+        </label>
+        <button id="gate-import" class="btn" type="button">Importar e continuar</button>
+      </div>
+    </details>
+    <p id="gate-login-msg" class="hint" style="margin:12px 0 0;display:none"></p>
+  </div>
+</div>
+
+<main id="app-main">
 
 <!-- ===== TAB: DASHBOARD ===== -->
 <div class="tab-panel active" id="tab-dashboard">
@@ -107,6 +174,7 @@
         <div class="kv"><span>Admin</span><b id="couch-admin-user" class="mono" style="font-size:12px">—</b></div>
         <div class="kv"><span>Senha</span><b id="couch-admin-pass" class="mono couch-pass-value">—</b></div>
         <div class="kv"><span>Databases</span><b id="couch-dbs-count">—</b></div>
+        <div class="kv"><span>Scraping</span><b id="couch-scraping-size">—</b></div>
       </div>
       <div class="card-footer">
         <div class="actions">
@@ -137,6 +205,35 @@
         <span class="stat-label">API</span>
         <span id="api-badge-2" class="stat-value badge ok">online</span>
       </div>
+    </div>
+  </div>
+
+  <div class="card" id="card-extension-install">
+    <div class="card-head"><h2>Extensão do navegador</h2></div>
+    <div class="card-body">
+      <p style="margin:0 0 10px">Verifica se a página está indexada no Agent e permite sugerir ao scraper. Instale pela <strong>Chrome Web Store</strong> no seu Chrome normal.</p>
+      <div class="actions" style="margin:0 0 14px;flex-wrap:wrap">
+        <button id="ext-open-store" class="btn green" type="button">Instalar no Chrome (Web Store)</button>
+      </div>
+      <p class="hint" style="margin:0 0 12px">O botão abre a ficha oficial. Clique em <strong>Usar no Chrome</strong> na loja.</p>
+      <details id="ext-advanced" style="margin-top:4px">
+        <summary style="cursor:pointer;font-weight:600;font-size:13px">Opções avançadas (sideload / Firefox)</summary>
+        <div style="margin-top:10px">
+          <p id="ext-chrome-hint" class="hint" style="margin:0 0 8px">Sideload Chrome: perfil dedicado BuscaLogo com a pasta local (dev / offline).</p>
+          <p id="ext-firefox-hint" class="hint" style="margin:0 0 12px">Firefox: abre about:debugging e a pasta — carregue o <code>manifest.json</code>.</p>
+          <div class="kv"><span>Pasta</span><b id="ext-root-path" class="mono" style="font-size:12px;word-break:break-all">—</b></div>
+          <div class="kv"><span>Chrome local</span><b id="ext-chrome-ready">—</b></div>
+          <div class="kv"><span>Firefox local</span><b id="ext-firefox-ready">—</b></div>
+          <div class="actions" style="margin-top:12px;flex-wrap:wrap">
+            <button id="ext-launch-chrome" class="btn" type="button">Sideload no Chrome</button>
+            <button id="ext-shortcut-chrome" class="btn" type="button">Atalho sideload</button>
+            <button id="ext-launch-firefox" class="btn" type="button">Preparar Firefox</button>
+            <button id="ext-open-chrome-dir" class="btn small" type="button">Abrir pasta</button>
+            <button id="ext-refresh-info" class="btn small" type="button">Atualizar</button>
+          </div>
+        </div>
+      </details>
+      <p id="ext-launch-msg" class="hint" style="margin:12px 0 0;display:none"></p>
     </div>
   </div>
 </div>
@@ -325,6 +422,7 @@
         <div class="kv"><span>Fila</span><b id="scraper-queue">—</b></div>
         <div class="kv"><span>Processadas</span><b id="scraper-processed">—</b></div>
         <div class="kv"><span>Banco</span><b id="scraper-couch-mode">CouchDB</b></div>
+        <div class="kv"><span>Índice</span><b id="scraper-storage-size">—</b></div>
       </div>
       <div class="card-footer">
         <div class="actions">
@@ -396,29 +494,18 @@
         </select>
         <button id="scraper-add-url" class="btn green">Raspar</button>
       </div>
-      <p class="hint" style="margin:8px 0 0">Resultados em <code>buscalogo_scraping</code> no CouchDB (compatível PouchDB).</p>
+      <p class="hint" style="margin:8px 0 0">Cada site fica em um database <code>bl_scraping_&lt;host&gt;</code>. O monólito legado <code>buscalogo_scraping</code> pode ser apagado abaixo se ainda estiver grande.</p>
     </div>
   </div>
 
-  <div class="card" id="card-extension-install">
-    <div class="card-head"><h2>Extensão do navegador</h2></div>
-    <div class="card-body">
-      <p style="margin:0 0 10px">Use a extensão para ver se a página está indexada e sugerir ao scraper — sem passar pela loja.</p>
-      <p id="ext-chrome-hint" class="hint" style="margin:0 0 8px">Chrome: um clique abre o navegador com a extensão já ativa (perfil BuscaLogo).</p>
-      <p id="ext-firefox-hint" class="hint" style="margin:0 0 12px">Firefox: abre a tela certa e copia o caminho — falta só carregar o <code>manifest.json</code>.</p>
-      <div class="kv"><span>Pasta</span><b id="ext-root-path" class="mono" style="font-size:12px;word-break:break-all">—</b></div>
-      <div class="kv"><span>Chrome</span><b id="ext-chrome-ready">—</b></div>
-      <div class="kv"><span>Firefox</span><b id="ext-firefox-ready">—</b></div>
-      <p id="ext-launch-msg" class="hint" style="margin:12px 0 0;display:none"></p>
+  <div class="card" id="card-scraped-sites">
+    <div class="card-head">
+      <h2>Sites indexados</h2>
+      <button id="scraper-sites-refresh" class="btn small" type="button">Atualizar</button>
     </div>
-    <div class="card-footer">
-      <div class="actions">
-        <button id="ext-launch-chrome" class="btn green" type="button">Abrir Chrome com extensão</button>
-        <button id="ext-shortcut-chrome" class="btn" type="button">Criar atalho no menu</button>
-        <button id="ext-launch-firefox" class="btn" type="button">Preparar Firefox</button>
-        <button id="ext-open-chrome-dir" class="btn small" type="button">Abrir pasta</button>
-        <button id="ext-refresh-info" class="btn small" type="button">Atualizar</button>
-      </div>
+    <div class="card-body">
+      <p class="hint" style="margin:0 0 10px">Remover um site apaga o database desse hostname (rápido). O item “legado monólito” é o banco antigo único — apague-o para liberar disco.</p>
+      <div id="scraper-sites" class="scraper-sites muted">Carregando…</div>
     </div>
   </div>
 
@@ -491,6 +578,54 @@
         </div>
       </div>
     </details>
+  </div>
+</div>
+
+<!-- ===== TAB: PROFILE ===== -->
+<div class="tab-panel" id="tab-profile">
+  <div class="card" id="card-account">
+    <div class="card-head"><h2>Perfil e assinatura</h2></div>
+    <div class="card-body">
+      <p class="hint" style="margin:0 0 10px">Conta local com chave ed25519. Scrapes são assinados — quem busca vê o autor. Guarde o backup com a chave privada.</p>
+      <div id="account-logged-out">
+        <div class="form" style="gap:10px">
+          <label>Usuário
+            <input id="account-username" type="text" autocomplete="username" minlength="2" placeholder="mín. 2 caracteres">
+          </label>
+          <label>Senha
+            <input id="account-password" type="password" autocomplete="current-password" minlength="6" placeholder="mín. 6 caracteres">
+          </label>
+        </div>
+        <div class="actions" style="margin-top:12px;flex-wrap:wrap">
+          <button id="account-login" class="btn green" type="button">Entrar</button>
+          <button id="account-register" class="btn" type="button">Cadastrar outra conta</button>
+        </div>
+        <details style="margin-top:14px">
+          <summary style="cursor:pointer;font-weight:600;font-size:13px">Recuperar com backup JSON</summary>
+          <div class="form" style="margin-top:10px;gap:10px">
+            <label>Arquivo de backup
+              <input id="account-import-file" type="file" accept="application/json,.json">
+            </label>
+            <label>Nova senha
+              <input id="account-import-password" type="password" minlength="6" placeholder="nova senha da conta">
+            </label>
+            <button id="account-import" class="btn" type="button">Importar e entrar</button>
+          </div>
+        </details>
+      </div>
+      <div id="account-logged-in" style="display:none">
+        <div class="kv"><span>Usuário</span><b id="account-display-name">—</b></div>
+        <div class="kv"><span>Server ID</span><b id="account-server-id" class="mono" style="font-size:11px;word-break:break-all">—</b></div>
+        <div class="kv"><span>Chave pública</span><b id="account-pubkey" class="mono" style="font-size:11px;word-break:break-all">—</b></div>
+        <div class="kv"><span>Scrapes</span><b id="account-signing-status" style="color:var(--green)">assinados com esta conta</b></div>
+        <div class="actions" style="margin-top:12px;flex-wrap:wrap">
+          <button id="account-export" class="btn green" type="button">Baixar backup + chave</button>
+          <button id="account-logout" class="btn red" type="button">Sair</button>
+          <button id="account-refresh" class="btn small" type="button">Atualizar</button>
+        </div>
+      </div>
+      <p id="account-msg" class="hint" style="margin:12px 0 0;display:none"></p>
+    </div>
   </div>
 </div>
 

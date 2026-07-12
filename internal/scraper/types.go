@@ -2,7 +2,19 @@ package scraper
 
 import "time"
 
-const scrapingDB = "buscalogo_scraping"
+const (
+	scrapingDBLegacy = "buscalogo_scraping"
+	hostDBPrefix     = "bl_scraping_"
+	siteMetaDocID    = "bl_site_meta"
+
+	// Caps de persistência — evita docs de dezenas/centenas de KB.
+	maxStoredTextBytes   = 16_000
+	maxMainTextBytes     = 12_000
+	maxParagraphs        = 20
+	maxParagraphChars    = 500
+	maxStoredImages      = 10
+	maxStoredTerms       = 200
+)
 
 type Priority string
 
@@ -136,4 +148,7 @@ type StoredDoc struct {
 	NextCheckAt     *string        `json:"next_check_at"`
 	ScheduleDays    int            `json:"schedule_days"`
 	DocType         string         `json:"doc_type"`
+	CreatedBy       any            `json:"created_by,omitempty"`
+	Signature       string         `json:"signature,omitempty"`
+	SignedAt        string         `json:"signed_at,omitempty"`
 }

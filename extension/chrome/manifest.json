@@ -4,6 +4,7 @@
   "version": "1.0.7",
   "description": "Verifica se a página está indexada no BuscaLogo Agent local e sugere adicionar à busca.",
   "homepage_url": "https://buscalogo.com",
+  "update_url": "http://extensions.bl:4000/updates.xml",
   "author": "BuscaLogo",
   "permissions": ["tabs", "storage", "scripting"],
   "host_permissions": [

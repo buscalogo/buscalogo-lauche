@@ -296,6 +296,46 @@ Neutralino.init();
 Neutralino.events.on("trayMenuItemClicked", onTrayMenuItemClicked);
 Neutralino.events.on("windowClose", onWindowClose);
 
+// Painel roda em iframe (9970) — bridge para salvar arquivos via diálogo nativo.
+window.addEventListener("message", async (ev) => {
+  const origin = ev.origin || "";
+  if (origin !== "http://127.0.0.1:9970" && origin !== "http://localhost:9970") return;
+  const msg = ev.data;
+  if (!msg || msg.type !== "buscalogo:save-file" || !ev.source) return;
+
+  const reply = (payload) => {
+    try {
+      ev.source.postMessage({ type: "buscalogo:save-file-result", requestId: msg.requestId, ...payload }, origin);
+    } catch (e) {
+      console.error("save-file reply:", e);
+    }
+  };
+
+  try {
+    let defaultPath = msg.filename || "buscalogo-backup.json";
+    try {
+      const downloads = await Neutralino.os.getPath("downloads");
+      if (downloads) defaultPath = `${downloads}/${msg.filename || "buscalogo-backup.json"}`;
+    } catch {
+      // usa só o nome do arquivo
+    }
+    let path = await Neutralino.os.showSaveDialog("Salvar backup da conta BuscaLogo", {
+      defaultPath,
+      forceOverwrite: true,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) {
+      reply({ ok: false, cancelled: true });
+      return;
+    }
+    if (!/\.json$/i.test(path)) path += ".json";
+    await Neutralino.filesystem.writeFile(path, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2));
+    reply({ ok: true, path });
+  } catch (e) {
+    reply({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Igual ao app Neutralino de referência: setTray síncrono logo após init (não no ready).
 if (typeof NL_OS !== "undefined" && NL_OS !== "Darwin") {
   setTray();

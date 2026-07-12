@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BuscaLogo — Extensões</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --fg: #e8eef4;
+      --muted: #8b9aab;
+      --accent: #3d8bfd;
+      --warn: #e6a23c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(ellipse at top, #1a2838 0%, var(--bg) 55%);
+      color: var(--fg);
+      display: grid;
+      place-items: center;
+      padding: 2rem;
+    }
+    main { max-width: 40rem; width: 100%; }
+    h1 { font-size: 1.75rem; margin: 0 0 0.5rem; }
+    h2 { font-size: 1.05rem; margin: 1.75rem 0 0.5rem; color: #c5d4e8; }
+    p, li { color: var(--muted); line-height: 1.5; }
+    a.install {
+      display: inline-block;
+      margin-top: 0.75rem;
+      padding: 0.85rem 1.4rem;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+      border-radius: 8px;
+    }
+    a.install:hover { filter: brightness(1.08); }
+    code { color: #c5d4e8; font-size: 0.9em; }
+    .warn {
+      margin-top: 1.25rem;
+      padding: 0.9rem 1rem;
+      border: 1px solid rgba(230, 162, 60, 0.45);
+      border-radius: 8px;
+      background: rgba(230, 162, 60, 0.08);
+      color: #f0d9a8;
+      font-size: 0.92rem;
+    }
+    ol { padding-left: 1.2rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>BuscaLogo Agent</h1>
+    <p>Extensão Chrome/Chromium auto-hospedada em <code>extensions.bl</code> (Linux).</p>
+
+    <div class="warn">
+      Se aparecer <strong>CRX_REQUIRED_PROOF_MISSING</strong> e o Chrome apagar o
+      arquivo: é bloqueio normal. O Chrome só instala <code>.crx</code> fora da
+      loja com <strong>política</strong> (ou “carregar sem compactação”).
+    </div>
+
+    <h2>1) Política (necessário para o botão Instalar)</h2>
+    <ol>
+      <li>No terminal:
+        <br /><code>sudo bash extension/store/install-chrome-policy.sh</code>
+      </li>
+      <li>Feche o Chrome por completo e abra de novo</li>
+      <li>Confira em <code>chrome://policy</code></li>
+      <li>Volte aqui e clique em Instalar</li>
+    </ol>
+    <p>
+      <a class="install" href="/chrome.crx">Instalar extensão (.crx)</a>
+    </p>
+
+    <h2>2) Sem política (dev)</h2>
+    <p>
+      <code>chrome://extensions</code> → Modo do desenvolvedor →
+      <strong>Carregar sem compactação</strong> → pasta
+      <code>extension/chrome</code>
+      (não usa o <code>.crx</code>; o Chrome não apaga a pasta).
+    </p>
+
+    <p style="margin-top:1.5rem;font-size:0.9rem">
+      Update: <code>/updates.xml</code> · versão <strong>1.0.7</strong> ·
+      ID <code>pfngpgblanlbmjmkegaiellacehnjooa</code>
+    </p>
+  </main>
+</body>
+</html>

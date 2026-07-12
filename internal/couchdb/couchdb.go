@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"buscalogo-agent/assets"
@@ -26,10 +28,23 @@ type Service struct {
 	cfg  *config.Config
 	buf  *logx.Buffer
 	proc *process.Managed
+
+	dbInfoMu    sync.Mutex
+	dbInfoCache map[string]DbInfo
+	dbInfoAt    time.Time
+}
+
+// DbInfo é o resumo de um database CouchDB (GET /{db}).
+type DbInfo struct {
+	Name     string `json:"name"`
+	DocCount int64  `json:"doc_count"`
+	FileSize int64  `json:"file_size"`
+	DataSize int64  `json:"data_size"`
+	Error    string `json:"error,omitempty"`
 }
 
 func New(cfg *config.Config, buf *logx.Buffer) *Service {
-	return &Service{cfg: cfg, buf: buf}
+	return &Service{cfg: cfg, buf: buf, dbInfoCache: map[string]DbInfo{}}
 }
 
 func (s *Service) ReleaseRoot() (string, error) {
@@ -524,6 +539,15 @@ func (s *Service) httpClient() *http.Client {
 	return &http.Client{Timeout: 5 * time.Second}
 }
 
+func (s *Service) httpClientLong() *http.Client {
+	return &http.Client{Timeout: 90 * time.Second}
+}
+
+// httpClientList: listas com include_docs — timeout curto para não travar o painel.
+func (s *Service) httpClientList() *http.Client {
+	return &http.Client{Timeout: 12 * time.Second}
+}
+
 func (s *Service) authRequest(req *http.Request) {
 	user := s.cfg.CouchDB.AdminUser
 	pass := s.cfg.CouchDB.AdminPassword
@@ -552,12 +576,12 @@ func (s *Service) Reachable(client *http.Client) bool {
 // Info retorna status HTTP do CouchDB e lista de databases.
 func (s *Service) Info() map[string]any {
 	info := map[string]any{
-		"url":            s.BaseURL(),
-		"reachable":      false,
-		"admin_user":     s.cfg.CouchDB.AdminUser,
-		"admin_password": s.cfg.CouchDB.AdminPassword,
+		"url":             s.BaseURL(),
+		"reachable":       false,
+		"admin_user":      s.cfg.CouchDB.AdminUser,
+		"admin_password":  s.cfg.CouchDB.AdminPassword,
 		"credential_file": s.credentialFilePath(),
-		"config_file":    s.cfg.Path(),
+		"config_file":     s.cfg.Path(),
 	}
 	client := s.httpClient()
 	if !s.Reachable(client) {
@@ -579,21 +603,255 @@ func (s *Service) Info() map[string]any {
 		}
 	}
 
-	req, err = http.NewRequest(http.MethodGet, s.BaseURL()+"/_all_dbs", nil)
-	if err == nil {
-		s.authRequest(req)
-		if resp, err := client.Do(req); err == nil {
-			defer resp.Body.Close()
-			var dbs []string
-			if json.NewDecoder(resp.Body).Decode(&dbs) == nil {
-				info["databases"] = dbs
-			}
+	dbs, err := s.ListDatabases()
+	if err != nil {
+		info["databases"] = []string{}
+	} else {
+		info["databases"] = dbs
+	}
+
+	// Só detalha DBs padrão (leve). Host DBs: contar nomes — GET em cada um
+	// travava o painel (legado 5.7GB + N hosts a cada poll).
+	detailNames := make([]string, 0, len(config.DefaultCouchDBDatabases))
+	seen := map[string]bool{}
+	for _, name := range config.DefaultCouchDBDatabases {
+		if !seen[name] {
+			seen[name] = true
+			detailNames = append(detailNames, name)
 		}
 	}
-	if _, ok := info["databases"]; !ok {
-		info["databases"] = []string{}
+	details := s.DbInfoMany(detailNames)
+	info["database_details"] = details
+
+	hostDBs := 0
+	for _, name := range dbs {
+		if strings.HasPrefix(name, "bl_scraping_") {
+			hostDBs++
+		}
+	}
+	var legacyDocs, legacyBytes int64
+	for _, d := range details {
+		if d.Name == "buscalogo_scraping" {
+			legacyDocs = d.DocCount
+			legacyBytes = d.FileSize
+			break
+		}
+	}
+	info["scraping"] = map[string]any{
+		"databases":      hostDBs + boolToInt(legacyDocs > 0),
+		"host_databases": hostDBs,
+		"doc_count":      legacyDocs, // legado; hosts na aba Scraper
+		"file_size":      legacyBytes,
+		"legacy_docs":    legacyDocs,
+		"legacy_bytes":   legacyBytes,
+		"legacy_db":      "buscalogo_scraping",
+		"host_prefix":    "bl_scraping_",
 	}
 	return info
+}
+
+func boolToInt(ok bool) int {
+	if ok {
+		return 1
+	}
+	return 0
+}
+
+// ListDatabases retorna todos os nomes de DB.
+func (s *Service) ListDatabases() ([]string, error) {
+	client := s.httpClient()
+	req, err := http.NewRequest(http.MethodGet, s.BaseURL()+"/_all_dbs", nil)
+	if err != nil {
+		return nil, err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GET _all_dbs: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var dbs []string
+	if err := json.NewDecoder(resp.Body).Decode(&dbs); err != nil {
+		return nil, err
+	}
+	return dbs, nil
+}
+
+// InvalidateDbInfoCache limpa o cache de tamanhos (após delete em massa).
+func (s *Service) InvalidateDbInfoCache() {
+	s.dbInfoMu.Lock()
+	defer s.dbInfoMu.Unlock()
+	s.dbInfoCache = map[string]DbInfo{}
+	s.dbInfoAt = time.Time{}
+}
+
+func (s *Service) invalidateOneDbInfo(name string) {
+	s.dbInfoMu.Lock()
+	defer s.dbInfoMu.Unlock()
+	delete(s.dbInfoCache, name)
+}
+
+// DbInfo consulta GET /{db} (com cache curto).
+func (s *Service) DbInfo(name string) (DbInfo, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return DbInfo{}, fmt.Errorf("nome de database vazio")
+	}
+	s.dbInfoMu.Lock()
+	if time.Since(s.dbInfoAt) < 60*time.Second {
+		if cached, ok := s.dbInfoCache[name]; ok {
+			s.dbInfoMu.Unlock()
+			return cached, nil
+		}
+	} else {
+		// janela expirou — limpa e recomeça
+		s.dbInfoCache = map[string]DbInfo{}
+		s.dbInfoAt = time.Now()
+	}
+	s.dbInfoMu.Unlock()
+
+	info, err := s.fetchDbInfo(name)
+	if err != nil {
+		return info, err
+	}
+	s.dbInfoMu.Lock()
+	if s.dbInfoCache == nil {
+		s.dbInfoCache = map[string]DbInfo{}
+	}
+	if s.dbInfoAt.IsZero() {
+		s.dbInfoAt = time.Now()
+	}
+	s.dbInfoCache[name] = info
+	s.dbInfoMu.Unlock()
+	return info, nil
+}
+
+// DbInfoMany consulta vários DBs; falhas parciais preenchem Error sem abortar.
+func (s *Service) DbInfoMany(names []string) []DbInfo {
+	out := make([]DbInfo, 0, len(names))
+	for _, name := range names {
+		info, err := s.DbInfo(name)
+		if err != nil {
+			out = append(out, DbInfo{Name: name, Error: err.Error()})
+			continue
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
+func (s *Service) fetchDbInfo(name string) (DbInfo, error) {
+	client := s.httpClient()
+	u := s.BaseURL() + "/" + url.PathEscape(name)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return DbInfo{Name: name}, err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return DbInfo{Name: name}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return DbInfo{Name: name}, fmt.Errorf("not found")
+	}
+	if resp.StatusCode >= 300 {
+		return DbInfo{Name: name}, fmt.Errorf("GET %s: HTTP %d %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var raw struct {
+		DBName   string `json:"db_name"`
+		DocCount int64  `json:"doc_count"`
+		DiskSize int64  `json:"disk_size"`
+		DataSize int64  `json:"data_size"`
+		Sizes    *struct {
+			File   int64 `json:"file"`
+			Active int64 `json:"active"`
+			External int64 `json:"external"`
+		} `json:"sizes"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return DbInfo{Name: name}, err
+	}
+	info := DbInfo{
+		Name:     name,
+		DocCount: raw.DocCount,
+		FileSize: raw.DiskSize,
+		DataSize: raw.DataSize,
+	}
+	if raw.DBName != "" {
+		info.Name = raw.DBName
+	}
+	if raw.Sizes != nil {
+		if raw.Sizes.File > 0 {
+			info.FileSize = raw.Sizes.File
+		}
+		if raw.Sizes.Active > 0 {
+			info.DataSize = raw.Sizes.Active
+		}
+	}
+	return info, nil
+}
+
+// EnsureDB cria o database se não existir (PUT).
+func (s *Service) EnsureDB(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("nome de database vazio")
+	}
+	client := s.httpClient()
+	req, err := http.NewRequest(http.MethodPut, s.BaseURL()+"/"+name, nil)
+	if err != nil {
+		return err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	switch resp.StatusCode {
+	case http.StatusCreated, http.StatusPreconditionFailed, http.StatusOK:
+		s.invalidateOneDbInfo(name)
+		return nil
+	default:
+		return fmt.Errorf("PUT %s: HTTP %d %s", name, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+}
+
+// DeleteDB remove um database inteiro.
+func (s *Service) DeleteDB(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("nome de database vazio")
+	}
+	client := s.httpClient()
+	req, err := http.NewRequest(http.MethodDelete, s.BaseURL()+"/"+name, nil)
+	if err != nil {
+		return err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		s.invalidateOneDbInfo(name)
+		return nil
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("DELETE %s: HTTP %d %s", name, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	s.invalidateOneDbInfo(name)
+	return nil
 }
 
 func (s *Service) credentialFilePath() string {
@@ -675,11 +933,19 @@ func (s *Service) GetDoc(db, docID string) ([]byte, string, error) {
 
 // ListDocs lista documentos por intervalo de _id (startkey/endkey).
 func (s *Service) ListDocs(db, startKey, endKey string, limit int) ([]DocRow, error) {
+	return s.ListDocsPaged(db, startKey, endKey, limit, 0)
+}
+
+// ListDocsPaged lista documentos com skip (paginação para varreduras completas).
+func (s *Service) ListDocsPaged(db, startKey, endKey string, limit, skip int) ([]DocRow, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	client := s.httpClient()
-	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&limit=%d", s.BaseURL(), db, limit)
+	if skip < 0 {
+		skip = 0
+	}
+	client := s.httpClientList()
+	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&limit=%d&skip=%d", s.BaseURL(), db, limit, skip)
 	if startKey != "" {
 		u += "&startkey=" + jsonKey(startKey) + "&endkey=" + jsonKey(endKey)
 	}
@@ -752,6 +1018,9 @@ func (s *Service) DeleteDoc(db, docID, rev string) error {
 // PutDoc grava um documento JSON em um database (helper para integração futura).
 func (s *Service) PutDoc(db, docID string, body []byte) error {
 	client := s.httpClient()
+	if strings.HasPrefix(docID, "_design/") {
+		client = s.httpClientLong()
+	}
 	url := s.BaseURL() + "/" + db + "/" + docID
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
 	if err != nil {
@@ -769,4 +1038,106 @@ func (s *Service) PutDoc(db, docID string, body []byte) error {
 		return fmt.Errorf("PUT %s: HTTP %d %s", url, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return nil
+}
+
+// GetDocLong é GetDoc com timeout maior (design docs / ops lentas).
+func (s *Service) GetDocLong(db, docID string) ([]byte, string, error) {
+	client := s.httpClientLong()
+	url := s.BaseURL() + "/" + db + "/" + docID
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", fmt.Errorf("not found")
+	}
+	if resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("GET %s: HTTP %d %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body, "", nil
+	}
+	rev := ""
+	if r, ok := doc["_rev"]; ok {
+		_ = json.Unmarshal(r, &rev)
+		delete(doc, "_rev")
+	}
+	delete(doc, "_id")
+	out, err := json.Marshal(doc)
+	return out, rev, err
+}
+
+// ViewRow é uma linha de uma view CouchDB.
+type ViewRow struct {
+	ID    string          `json:"id"`
+	Key   json.RawMessage `json:"key"`
+	Value json.RawMessage `json:"value"`
+}
+
+// EnsureDesignDoc cria/atualiza um design doc se a rev atual for diferente.
+func (s *Service) EnsureDesignDoc(db, designID string, body map[string]any) error {
+	if !strings.HasPrefix(designID, "_design/") {
+		designID = "_design/" + designID
+	}
+	existing, rev, err := s.GetDocLong(db, designID)
+	if err == nil && len(existing) > 0 {
+		var prev map[string]json.RawMessage
+		_ = json.Unmarshal(existing, &prev)
+		if v, ok := body["views"]; ok {
+			want, _ := json.Marshal(v)
+			if cur, ok := prev["views"]; ok && bytes.Equal(cur, want) {
+				return nil
+			}
+		}
+		body["_rev"] = rev
+	} else if err != nil && !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return s.PutDoc(db, designID, raw)
+}
+
+// QueryView consulta uma view. group/reduce controlam agregação.
+func (s *Service) QueryView(db, design, view string, opts map[string]string) ([]ViewRow, error) {
+	client := s.httpClientLong()
+	u := fmt.Sprintf("%s/%s/_design/%s/_view/%s", s.BaseURL(), db, design, view)
+	q := url.Values{}
+	for k, v := range opts {
+		q.Set(k, v)
+	}
+	if enc := q.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	s.authRequest(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET %s: HTTP %d %s", u, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var parsed struct {
+		Rows []ViewRow `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Rows, nil
 }

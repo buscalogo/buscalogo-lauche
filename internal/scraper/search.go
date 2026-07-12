@@ -127,7 +127,7 @@ func (st *Store) Search(query, queryID, peerID string, limit int) ([]SearchHit, 
 		return nil, nil
 	}
 
-	docs, err := st.ListResults(300)
+	docs, err := st.ListResultsFull(100)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (st *Store) Search(query, queryID, peerID string, limit int) ([]SearchHit, 
 				"headings":    rel.matches["headings"],
 				"topics":      rel.matches["topics"],
 			},
-			CreatedBy: nil,
+			CreatedBy: doc.CreatedBy,
 			Favicon:   favicon,
 			Content: map[string]any{
 				"headings":   doc.Content.Headings,
@@ -182,12 +182,13 @@ func (st *Store) Search(query, queryID, peerID string, limit int) ([]SearchHit, 
 				"contentType": contentType,
 				"topics":      doc.Analysis.Topics,
 				"wordCount":   doc.Analysis.WordCount,
+				"signed":      doc.Signature != "",
 			},
 			Source: map[string]any{
 				"peerId":    peerID,
 				"peerType":  "scraper_server",
 				"queryId":   queryID,
-				"createdBy": nil,
+				"createdBy": doc.CreatedBy,
 			},
 		})
 	}

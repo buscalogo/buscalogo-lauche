@@ -11,6 +11,9 @@ import (
 	"buscalogo-agent/internal/paths"
 )
 
+// ChromeWebStoreURL é a ficha pública da extensão BuscaLogo Agent.
+const ChromeWebStoreURL = "https://chromewebstore.google.com/detail/buscalogo-agent/gecmkbanhikgnhpcdibplcfndapclneh"
+
 var chromiumBins = []string{
 	"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
 	"brave-browser", "microsoft-edge", "microsoft-edge-stable",
@@ -42,6 +45,36 @@ func FindFirefox() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("Firefox não encontrado no PATH")
+}
+
+// OpenChromeWebStore abre o Chrome/Chromium no perfil normal, na ficha da extensão.
+func OpenChromeWebStore() (bin string, err error) {
+	return OpenURL(ChromeWebStoreURL)
+}
+
+// OpenURL abre uma URL no Chromium (preferido) ou via xdg-open.
+func OpenURL(rawURL string) (bin string, err error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", fmt.Errorf("URL vazia")
+	}
+	if bin, err = FindChromium(); err == nil {
+		cmd := exec.Command(bin, rawURL)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return bin, err
+		}
+		return bin, nil
+	}
+	if _, lookErr := exec.LookPath("xdg-open"); lookErr != nil {
+		return "", fmt.Errorf("%v (e xdg-open indisponível)", err)
+	}
+	cmd := exec.Command("xdg-open", rawURL)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return "xdg-open", err
+	}
+	return "xdg-open", nil
 }
 
 func profileDir(browser string) (string, error) {

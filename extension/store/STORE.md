@@ -32,6 +32,8 @@ Saída:
 
 ## Chrome Web Store
 
+Publicada: https://chromewebstore.google.com/detail/buscalogo-agent/gecmkbanhikgnhpcdibplcfndapclneh
+
 1. Conta em https://chrome.google.com/webstore/devconsole (taxa única ~US$5)
 2. **Novo item** → upload do zip Chrome
 3. Preencha com os textos de `listing-pt.md` / `listing-en.md`

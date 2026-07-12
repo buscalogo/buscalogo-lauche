@@ -103,7 +103,7 @@ func newPeerID() string {
 
 func (c *Connector) Start() error {
 	if c.store == nil {
-		err := "CouchDB/scraper indisponível — o P2P precisa do banco buscalogo_scraping"
+		err := "CouchDB/scraper indisponível — o P2P precisa do índice de scraping"
 		c.mu.Lock()
 		c.startError = err
 		c.running = false

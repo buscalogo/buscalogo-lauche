@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"buscalogo-agent/frontend"
+	"buscalogo-agent/internal/account"
 	"buscalogo-agent/internal/autostart"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
@@ -41,6 +42,7 @@ type Server struct {
 	ygg     *yggdrasil.Service
 	couchdb *couchdb.Service
 	scraper *scraper.Service
+	account *account.Service
 	p2p     *p2p.Connector
 	dns     *dns.Manager
 	sites   *sites.Manager
@@ -48,8 +50,8 @@ type Server struct {
 	srv     *http.Server
 }
 
-func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, p2pConn *p2p.Connector, d *dns.Manager, sm *sites.Manager, upd *update.Service) *Server {
-	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, p2p: p2pConn, dns: d, sites: sm, updater: upd}
+func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, acct *account.Service, p2pConn *p2p.Connector, d *dns.Manager, sm *sites.Manager, upd *update.Service) *Server {
+	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, account: acct, p2p: p2pConn, dns: d, sites: sm, updater: upd}
 	if upd != nil {
 		upd.SetOnInstalled(func() {
 			daemon, err := paths.DaemonExecutable()
@@ -97,6 +99,7 @@ func (s *Server) corsLocal(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
@@ -166,10 +169,20 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/scraper/clear", s.handleScraperClear)
 	mux.HandleFunc("GET /api/scraper/results", s.handleScraperResults)
 	mux.HandleFunc("DELETE /api/scraper/results/{docId}", s.handleScraperDeleteResult)
+	mux.HandleFunc("GET /api/scraper/sites", s.handleScraperSites)
+	mux.HandleFunc("DELETE /api/scraper/sites/{hostname}", s.handleScraperDeleteSite)
+	mux.HandleFunc("DELETE /api/scraper/legacy", s.handleScraperDeleteLegacy)
 	mux.HandleFunc("GET /api/scraper/lookup", s.handleScraperLookup)
+	mux.HandleFunc("POST /api/account/register", s.handleAccountRegister)
+	mux.HandleFunc("POST /api/account/login", s.handleAccountLogin)
+	mux.HandleFunc("POST /api/account/logout", s.handleAccountLogout)
+	mux.HandleFunc("GET /api/account/me", s.handleAccountMe)
+	mux.HandleFunc("GET /api/account/export", s.handleAccountExport)
+	mux.HandleFunc("POST /api/account/import", s.handleAccountImport)
 	mux.HandleFunc("GET /api/extension/info", s.handleExtensionInfo)
 	mux.HandleFunc("POST /api/extension/open-dir", s.handleExtensionOpenDir)
 	mux.HandleFunc("POST /api/extension/launch", s.handleExtensionLaunch)
+	mux.HandleFunc("POST /api/extension/open-store", s.handleExtensionOpenStore)
 	mux.HandleFunc("POST /api/extension/shortcut", s.handleExtensionShortcut)
 	mux.HandleFunc("GET /api/p2p/status", s.handleP2PStatus)
 	mux.HandleFunc("GET /api/p2p/test-search", s.handleP2PTestSearch)
@@ -438,11 +451,14 @@ func (s *Server) handleScraperClear(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleScraperResults(w http.ResponseWriter, r *http.Request) {
-	limit := 50
+	limit := 10
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
+	}
+	if limit > 20 {
+		limit = 20
 	}
 	results, err := s.scraper.ListResults(limit)
 	if err != nil {
@@ -469,6 +485,62 @@ func (s *Server) handleScraperDeleteResult(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Resultado removido"})
 }
 
+func (s *Server) handleScraperSites(w http.ResponseWriter, r *http.Request) {
+	sites, err := s.scraper.ListSites()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    sites,
+		"total":   len(sites),
+	})
+}
+
+func (s *Server) handleScraperDeleteSite(w http.ResponseWriter, r *http.Request) {
+	hostname := strings.TrimSpace(r.PathValue("hostname"))
+	if hostname == "" {
+		writeErr(w, http.StatusBadRequest, "hostname obrigatório")
+		return
+	}
+	if u, err := url.PathUnescape(hostname); err == nil && u != "" {
+		hostname = u
+	}
+	stats, err := s.scraper.DeleteSite(hostname)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.buf.Infof("api", "site scraping removido: %s docs=%d fila=%d processados=%d",
+		hostname, stats["documents"], stats["queued"], stats["processed"])
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("Removidos %d documento(s), %d da fila e %d marcas de processado",
+			stats["documents"], stats["queued"], stats["processed"]),
+		"data": map[string]any{
+			"hostname": hostname,
+			"deleted":  stats,
+		},
+	})
+}
+
+func (s *Server) handleScraperDeleteLegacy(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.scraper.DeleteLegacyScrapingDB()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	docs, _ := stats["doc_count"].(int64)
+	size, _ := stats["file_size"].(int64)
+	s.buf.Infof("api", "banco legado scraping removido: docs=%d size=%d", docs, size)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("Banco legado apagado (~%d docs). Espaço será liberado após compactação do CouchDB.", docs),
+		"data":    stats,
+	})
+}
+
 func (s *Server) handleScraperLookup(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimSpace(r.URL.Query().Get("url"))
 	if raw == "" {
@@ -486,6 +558,180 @@ func (s *Server) handleScraperLookup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) setAccountCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     account.CookieName(),
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   60 * 60 * 24 * 30,
+	})
+}
+
+func (s *Server) clearAccountCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     account.CookieName(),
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+}
+
+func (s *Server) accountFromRequest(r *http.Request) *account.PublicUser {
+	if s.account == nil {
+		return nil
+	}
+	c, err := r.Cookie(account.CookieName())
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	return s.account.ValidateSession(c.Value)
+}
+
+func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
+	if s.account == nil {
+		writeErr(w, http.StatusServiceUnavailable, "conta indisponível (CouchDB)")
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+	user, token, err := s.account.Register(body.Username, body.Password)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	s.setAccountCookie(w, token)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "Conta criada. Baixe o backup com a chave privada.",
+		"user":    user,
+		"me":      s.account.Me(),
+	})
+}
+
+func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
+	if s.account == nil {
+		writeErr(w, http.StatusServiceUnavailable, "conta indisponível (CouchDB)")
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+	user, token, err := s.account.Login(body.Username, body.Password)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "%v", err)
+		return
+	}
+	s.setAccountCookie(w, token)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"user": user,
+		"me":   s.account.Me(),
+	})
+}
+
+func (s *Server) handleAccountLogout(w http.ResponseWriter, r *http.Request) {
+	if s.account != nil {
+		s.account.Logout()
+	}
+	s.clearAccountCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAccountMe(w http.ResponseWriter, r *http.Request) {
+	if s.account == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":             true,
+			"logged_in":      false,
+			"has_account":    false,
+			"setup_required": true,
+			"login_required": false,
+			"locked":         true,
+			"error":          "CouchDB indisponível",
+		})
+		return
+	}
+	s.account.RestoreSession()
+	_ = s.accountFromRequest(r)
+	// Renova cookie se sessão persistida estiver ativa (ex.: após reinício do Agent).
+	if tok := s.account.SessionToken(); tok != "" && s.account.Current() != nil {
+		s.setAccountCookie(w, tok)
+	}
+	me := s.account.Me()
+	me["ok"] = true
+	writeJSON(w, http.StatusOK, me)
+}
+
+func (s *Server) handleAccountExport(w http.ResponseWriter, r *http.Request) {
+	if s.account == nil {
+		writeErr(w, http.StatusServiceUnavailable, "conta indisponível")
+		return
+	}
+	if s.accountFromRequest(r) == nil && s.account.Current() == nil {
+		writeErr(w, http.StatusUnauthorized, "faça login para exportar")
+		return
+	}
+	backup, err := s.account.ExportBackup()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	uname := "account"
+	if backup.User.Username != "" {
+		uname = backup.User.Username
+	}
+	filename := fmt.Sprintf("buscalogo-backup-%s-%d.json", uname, time.Now().Unix())
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(backup)
+}
+
+func (s *Server) handleAccountImport(w http.ResponseWriter, r *http.Request) {
+	if s.account == nil {
+		writeErr(w, http.StatusServiceUnavailable, "conta indisponível")
+		return
+	}
+	var body struct {
+		Backup      json.RawMessage `json:"backup"`
+		NewPassword string          `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+	if len(body.Backup) == 0 {
+		writeErr(w, http.StatusBadRequest, "backup obrigatório")
+		return
+	}
+	user, token, err := s.account.ImportBackup(body.Backup, body.NewPassword)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	s.setAccountCookie(w, token)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "Conta recuperada",
+		"user":    user,
+		"me":      s.account.Me(),
+	})
+}
+
 func (s *Server) handleExtensionInfo(w http.ResponseWriter, r *http.Request) {
 	root := extensionInstallRoot()
 	chromeDir := filepath.Join(root, "chrome")
@@ -495,14 +741,15 @@ func (s *Server) handleExtensionInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
 		"root": root,
+		"chrome_web_store": extension.ChromeWebStoreURL,
 		"chrome": map[string]any{
 			"path":        chromeDir,
 			"ready":       extension.DirReady(chromeDir),
 			"browser_bin": chromeBin,
 			"browser_ok":  chromeErr == nil,
 			"one_click":   true,
-			"install":     "chrome://extensions",
-			"hint":        "Um clique abre o Chrome com a extensão já carregada (perfil BuscaLogo).",
+			"install":     extension.ChromeWebStoreURL,
+			"hint":        "Instale pela Chrome Web Store no seu Chrome normal.",
 		},
 		"firefox": map[string]any{
 			"path":        firefoxDir,
@@ -511,8 +758,35 @@ func (s *Server) handleExtensionInfo(w http.ResponseWriter, r *http.Request) {
 			"browser_ok":  firefoxErr == nil,
 			"one_click":   false,
 			"install":     "about:debugging#/runtime/this-firefox",
-			"hint":        "Abre o Firefox, copia o caminho e a pasta — falta só “Carregar extensão temporária”.",
+			"hint":        "Firefox: sideload temporário via about:debugging (AMO em breve).",
 		},
+	})
+}
+
+func (s *Server) handleExtensionOpenStore(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Browser string `json:"browser"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	browser := strings.ToLower(strings.TrimSpace(body.Browser))
+	if browser == "" {
+		browser = "chrome"
+	}
+	if browser != "chrome" {
+		writeErr(w, http.StatusBadRequest, "por enquanto só chrome (Web Store)")
+		return
+	}
+	bin, err := extension.OpenChromeWebStore()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.buf.Infof("api", "Chrome Web Store aberta (%s)", bin)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"browser": bin,
+		"url":     extension.ChromeWebStoreURL,
+		"message": "Chrome aberto na página da extensão na Web Store. Clique em “Usar no Chrome”.",
 	})
 }
 

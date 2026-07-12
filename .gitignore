@@ -54,8 +54,13 @@ Thumbs.db
 *.bak
 *.tmp
 
-# --- Extensão (zips de loja) ---
+# --- Extensão (zips de loja + chave de assinatura .crx) ---
 extension/store/dist/
+extension/*.pem
+extension/chrome.pem
+*.pem
+!assets/**/*.pem
+
 
 # --- Neutralino desktop ---
 desktop/buscalogo-desktop/bin/

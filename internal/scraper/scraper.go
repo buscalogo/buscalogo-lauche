@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"buscalogo-agent/internal/process"
 )
 
-// Service é o motor de scraping nativo (CouchDB / buscalogo_scraping).
+// Service é o motor de scraping nativo (CouchDB por hostname + legado).
 type Service struct {
 	cfg    *config.Config
 	buf    *logx.Buffer
@@ -80,7 +81,10 @@ func (s *Service) ensureEngine() *Engine {
 func (s *Service) Start() error {
 	eng := s.ensureEngine()
 	eng.Start()
-	s.buf.Infof("scraper", "motor de scraping iniciado (CouchDB: %s)", scrapingDB)
+	s.buf.Infof("scraper", "motor de scraping iniciado (CouchDB: %s* + legado %s)", hostDBPrefix, scrapingDBLegacy)
+	if s.store != nil {
+		go s.store.WarmHostCounts()
+	}
 	return nil
 }
 
@@ -121,17 +125,28 @@ func (s *Service) Engine() *Engine {
 	return s.ensureEngine()
 }
 
+func (s *Service) SetSigner(signer ScrapeSigner) {
+	if s.store != nil {
+		s.store.SetSigner(signer)
+	}
+}
+
 func (s *Service) Info() map[string]any {
 	s.mu.Lock()
 	eng := s.engine
 	s.mu.Unlock()
 	info := map[string]any{
-		"backend":  "couchdb",
-		"database": scrapingDB,
-		"running":  false,
+		"backend":     "couchdb",
+		"database":    hostDBPrefix + "<hostname>",
+		"legacy_db":   scrapingDBLegacy,
+		"host_prefix": hostDBPrefix,
+		"running":     false,
 	}
 	if s.cdb != nil {
 		info["couchdb_url"] = s.cdb.BaseURL()
+	}
+	if s.store != nil {
+		info["storage"] = s.store.StorageStats()
 	}
 	if eng != nil {
 		info["running"] = eng.Running()
@@ -241,4 +256,52 @@ func (s *Service) DeleteResult(docID string) error {
 		return fmt.Errorf("CouchDB indisponível")
 	}
 	return s.store.Delete(docID)
+}
+
+func (s *Service) ListSites() ([]SiteSummary, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("CouchDB indisponível")
+	}
+	return s.store.ListSites()
+}
+
+// DeleteSite remove páginas indexadas do hostname (e variantes do mesmo domínio),
+// além de tarefas enfileiradas / marcas de processado relacionadas.
+func (s *Service) DeleteSite(hostname string) (map[string]int, error) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return nil, fmt.Errorf("hostname vazio")
+	}
+	if s.store == nil {
+		return nil, fmt.Errorf("CouchDB indisponível")
+	}
+	deleted, err := s.store.DeleteByHostname(hostname)
+	if err != nil {
+		return nil, err
+	}
+	queued, processed := 0, 0
+	if eng := s.Engine(); eng != nil {
+		queued, processed = eng.PurgeHostname(hostname)
+	}
+	return map[string]int{
+		"documents": deleted,
+		"queued":    queued,
+		"processed": processed,
+	}, nil
+}
+
+// DeleteLegacyScrapingDB remove o monólito buscalogo_scraping (libera disco).
+func (s *Service) DeleteLegacyScrapingDB() (map[string]any, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("CouchDB indisponível")
+	}
+	info, err := s.store.DeleteLegacyDB()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"database":  scrapingDBLegacy,
+		"doc_count": info.DocCount,
+		"file_size": info.FileSize,
+	}, nil
 }

@@ -5,6 +5,16 @@ const fmtUptime = (s) => {
   const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 };
+const fmtBytes = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return "\u2014";
+  if (v < 1024) return `${Math.round(v)} B`;
+  const u = ["KB", "MB", "GB", "TB"];
+  let x = v / 1024;
+  let i = 0;
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  return `${x < 10 ? x.toFixed(1) : Math.round(x)} ${u[i]}`;
+};
 const stateLabel = (st) => ({running:"rodando",stopped:"parado",starting:"iniciando",stopping:"parando",crashed:"caiu",disabled:"desabilitado"}[st] || st);
 
 const logLines = [];
@@ -29,7 +39,20 @@ document.querySelectorAll(".tab").forEach(tab => {
     if (panel) panel.classList.add("active");
     if (tab.dataset.tab === "scraper") {
       refreshScraperInfo();
+      refreshScrapedSites();
+    }
+    if (tab.dataset.tab === "dashboard") {
       refreshExtensionInfo();
+    }
+    if (tab.dataset.tab === "profile") {
+      refreshAccountInfo();
+    }
+    if (tab.dataset.tab === "logs") {
+      renderLogView();
+      refreshLogSources();
+    }
+    if (tab.dataset.tab === "sites") {
+      renderSites();
     }
   });
 });
@@ -79,7 +102,18 @@ function updateCard(id, st) {
   if (restartsEl) restartsEl.textContent = st.restart_count;
 }
 
+let lastSideInfoAt = 0;
+let lastScraperPollAt = 0;
+let lastUpdatePollAt = 0;
+let scraperRefreshBusy = false;
+let statusBusy = false;
+let couchInfoBusy = false;
+let logStream = null;
+let logReconnectTimer = null;
+
 async function fetchStatus() {
+  if (statusBusy) return;
+  statusBusy = true;
   try {
     const r = await fetch("/api/status");
     const d = await r.json();
@@ -90,22 +124,25 @@ async function fetchStatus() {
     updateCard("yggdrasil", d.services.yggdrasil);
     updateCard("couchdb", d.services.couchdb);
     if (d.services.scraper) updateCard("scraper", d.services.scraper);
-    refreshYggdrasilInfo();
-    refreshCouchInfo();
-    const scraperTab = document.getElementById("tab-scraper");
-    if (scraperTab?.classList.contains("active")) refreshScraperInfo();
 
+    const now = Date.now();
+    if (now - lastSideInfoAt > 45000) {
+      lastSideInfoAt = now;
+      refreshYggdrasilInfo();
+      refreshCouchInfo();
+    }
     const sys = d.system;
     $("#sys-mode-badge").textContent = d.dns_mode === "system" ? "Modo B" : "Modo A";
     $("#dns-mode-badge").textContent = d.dns_mode === "system" ? "Sistema (:53)" : "Local (:5333)";
 
     currentConfig = d.config || {};
     if (!configDirty) fillConfig(d.config);
-    refreshLogSources();
-    renderSites();
     renderSystrayWarning(d.systray);
     if (d.version) $("#version").textContent = `BuscaLogo Agent v${d.version}`;
-    refreshUpdateStatus();
+    if (now - lastUpdatePollAt > 30000) {
+      lastUpdatePollAt = now;
+      refreshUpdateStatus();
+    }
     if (d.web) {
       const w = d.web;
       currentWebPort = w.running ? (w.actual_port || w.port || 80) : (w.actual_port || w.port || 80);
@@ -158,6 +195,8 @@ async function fetchStatus() {
     $("#api-badge").className = "badge warn";
     $("#api-badge-2").textContent = "offline";
     $("#api-badge-2").className = "badge warn";
+  } finally {
+    statusBusy = false;
   }
 }
 
@@ -429,15 +468,20 @@ async function regenerateCouchPassword() {
 }
 
 async function refreshScraperInfo() {
+  if (scraperRefreshBusy) return;
+  if (document.visibilityState === "hidden") return;
+  scraperRefreshBusy = true;
+  const ctrl = new AbortController();
+  const abortTimer = setTimeout(() => ctrl.abort(), 8000);
   try {
     const [infoR, statsR, tasksR, resultsR, p2pR] = await Promise.all([
-      fetch("/api/scraper/info"),
-      fetch("/api/scraper/stats"),
-      fetch("/api/scraper/tasks"),
-      fetch("/api/scraper/results?limit=10"),
-      fetch("/api/p2p/status"),
+      fetch("/api/scraper/info", { signal: ctrl.signal }),
+      fetch("/api/scraper/stats", { signal: ctrl.signal }),
+      fetch("/api/scraper/tasks", { signal: ctrl.signal }),
+      fetch("/api/scraper/results?limit=10", { signal: ctrl.signal }),
+      fetch("/api/p2p/status", { signal: ctrl.signal }),
     ]);
-    loadP2PConfig(false);
+    clearTimeout(abortTimer);
     const info = (await infoR.json()).info || {};
     const stats = (await statsR.json()).data || {};
     const tasks = (await tasksR.json()).data || {};
@@ -446,7 +490,25 @@ async function refreshScraperInfo() {
     const queueEl = $("#scraper-queue");
     const processedEl = $("#scraper-processed");
     const dbEl = $("#scraper-couch-mode");
-    if (dbEl) dbEl.textContent = info.database ? `CouchDB / ${info.database}` : "CouchDB";
+    if (dbEl) {
+      const st = info.storage || {};
+      if (st.file_size != null) {
+        dbEl.textContent = `${info.host_prefix || "bl_scraping_"}*`;
+      } else {
+        dbEl.textContent = info.database ? `CouchDB / ${info.database}` : "CouchDB";
+      }
+    }
+    const storageEl = $("#scraper-storage-size");
+    if (storageEl) {
+      const st = info.storage || {};
+      if (st.file_size != null) {
+        const parts = [`${fmtBytes(st.file_size)} · ${st.doc_count ?? 0} docs`];
+        if (st.legacy_docs > 0) parts.push(`legado ${fmtBytes(st.legacy_bytes)}`);
+        storageEl.textContent = parts.join(" · ");
+      } else {
+        storageEl.textContent = "\u2014";
+      }
+    }
     const q = stats.queues || {};
     const queued = (q.high || 0) + (q.normal || 0) + (q.low || 0) + (q.discovered || 0);
     if (queueEl) queueEl.textContent = info.running ? `${queued} na fila, ${stats.active || 0} ativa(s)` : "parado";
@@ -477,10 +539,13 @@ async function refreshScraperInfo() {
         listEl.innerHTML = results.map(r => {
           const title = escapeHtml(r.title || r.url || r._id || "?");
           const host = escapeHtml(r.hostname || "");
-          return `<div class="scraper-result-row"><a href="${escapeHtml(r.url || "#")}" target="_blank" rel="noopener">${title}</a><span class="muted">${host}</span></div>`;
+          const id = escapeHtml(r._id || "");
+          return `<div class="scraper-result-row"><a href="${escapeHtml(r.url || "#")}" target="_blank" rel="noopener">${title}</a><span class="muted">${host}</span><button type="button" class="btn slim red scraper-del-doc" data-doc-id="${id}" title="Remover página">×</button></div>`;
         }).join("");
       }
     }
+
+    // Sites NÃO são recarregados aqui — só sob demanda (evita travar a UI).
 
     try {
       const p2p = await p2pR.json();
@@ -541,6 +606,64 @@ async function refreshScraperInfo() {
   } catch {
     const queueEl = $("#scraper-queue");
     if (queueEl) queueEl.textContent = "erro";
+    const sitesEl = $("#scraper-sites");
+    if (sitesEl && /Carregando/i.test(sitesEl.textContent || "")) {
+      sitesEl.innerHTML = '<span class="muted">Falha ao carregar painel do scraper.</span>';
+    }
+  } finally {
+    clearTimeout(abortTimer);
+    scraperRefreshBusy = false;
+  }
+}
+
+let scrapedSitesLoading = false;
+async function refreshScrapedSites() {
+  const sitesEl = $("#scraper-sites");
+  if (!sitesEl) return;
+  if (scrapedSitesLoading) return;
+  scrapedSitesLoading = true;
+  sitesEl.innerHTML = '<span class="muted">Carregando sites…</span>';
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 60000);
+    const r = await fetch("/api/scraper/sites", { signal: ctrl.signal });
+    clearTimeout(t);
+    const j = await r.json();
+    if (!r.ok || j.success === false) {
+      throw new Error(j.error || j.message || `HTTP ${r.status}`);
+    }
+    const sites = j.data || [];
+    if (!sites.length) {
+      sitesEl.innerHTML = '<span class="muted">Nenhum site indexado ainda.</span>';
+    } else {
+      sitesEl.innerHTML = sites.map(s => {
+        const host = escapeHtml(s.hostname || "");
+        const count = s.count ?? 0;
+        const size = s.size_bytes != null ? fmtBytes(s.size_bytes) : "";
+        const db = escapeHtml(s.database || "");
+        if (s.legacy) {
+          return `<div class="scraper-site-row scraper-site-legacy">
+            <div class="scraper-site-meta">
+              <strong class="mono">${host}</strong>
+              <span class="muted">${count} doc(s)${size ? " · " + size : ""} · <code>${db}</code></span>
+            </div>
+            <button type="button" class="btn slim red scraper-del-legacy" title="Apaga o banco legado inteiro">Apagar legado</button>
+          </div>`;
+        }
+        return `<div class="scraper-site-row">
+          <div class="scraper-site-meta">
+            <strong class="mono">${host}</strong>
+            <span class="muted">${count} página(s)${size ? " · " + size : ""}</span>
+          </div>
+          <button type="button" class="btn slim red scraper-del-site" data-hostname="${host}">Remover</button>
+        </div>`;
+      }).join("");
+    }
+  } catch (e) {
+    const msg = e.name === "AbortError" ? "tempo esgotado" : (e.message || e);
+    sitesEl.innerHTML = `<span class="muted">Erro ao listar sites: ${escapeHtml(String(msg))}</span>`;
+  } finally {
+    scrapedSitesLoading = false;
   }
 }
 
@@ -582,6 +705,381 @@ async function clearScraperQueue() {
   }
 }
 
+async function deleteScrapedSite(hostname) {
+  hostname = (hostname || "").trim();
+  if (!hostname) return;
+  if (!confirm(`Remover ${hostname} e tudo relacionado?\n\n• database bl_scraping_* deste host\n• itens na fila\n• marcas de “já processado”`)) {
+    return;
+  }
+  try {
+    const r = await fetch("/api/scraper/sites/" + encodeURIComponent(hostname), {
+      method: "DELETE",
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || d.message || "falha");
+    toast(d.message || "Site removido", 3500);
+    refreshScrapedSites();
+    refreshScraperInfo();
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function deleteLegacyScrapingDB() {
+  if (!confirm("Apagar o banco LEGADO buscalogo_scraping inteiro?\n\nIsso remove todas as páginas do monólito antigo (pode ser vários GB).\nNovos scrapes já usam um DB por site e não são afetados.\n\nEspaço em disco pode exigir compactação no CouchDB/Fauxton.")) {
+    return;
+  }
+  if (!confirm("Confirma apagar buscalogo_scraping? Esta ação não tem undo.")) return;
+  try {
+    const r = await fetch("/api/scraper/legacy", { method: "DELETE" });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || d.message || "falha");
+    toast(d.message || "Legado removido", 5000);
+    refreshScrapedSites();
+    refreshScraperInfo();
+    refreshCouchInfo();
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function deleteScraperDoc(docId) {
+  docId = (docId || "").trim();
+  if (!docId) return;
+  if (!confirm("Remover esta página do índice?")) return;
+  try {
+    const r = await fetch("/api/scraper/results/" + encodeURIComponent(docId), {
+      method: "DELETE",
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || d.message || "falha");
+    toast("Página removida");
+    refreshScraperInfo();
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+function showAccountMsg(msg, isErr) {
+  const el = $("#account-msg");
+  if (!el) return;
+  el.style.display = msg ? "block" : "none";
+  el.textContent = msg || "";
+  el.style.color = isErr ? "var(--red)" : "";
+}
+
+function showSetupMsg(msg, isErr) {
+  const el = $("#setup-msg");
+  if (!el) return;
+  el.style.display = msg ? "block" : "none";
+  el.textContent = msg || "";
+  el.style.color = isErr ? "var(--red)" : "";
+}
+
+function showGateLoginMsg(msg, isErr) {
+  const el = $("#gate-login-msg");
+  if (!el) return;
+  el.style.display = msg ? "block" : "none";
+  el.textContent = msg || "";
+  el.style.color = isErr ? "var(--red)" : "";
+}
+
+function setSetupGate(locked, mode) {
+  const gate = $("#setup-gate");
+  if (!gate) return;
+  document.body.classList.toggle("setup-locked", !!locked);
+  gate.style.display = locked ? "flex" : "none";
+  gate.setAttribute("aria-hidden", locked ? "false" : "true");
+  const reg = $("#setup-panel-register");
+  const login = $("#setup-panel-login");
+  if (reg) reg.style.display = locked && mode === "register" ? "block" : "none";
+  if (login) login.style.display = locked && mode === "login" ? "block" : "none";
+}
+
+function applyAccountMe(d) {
+  d = d || {};
+  const hasAccount = d.has_account === true;
+  const loggedIn = d.logged_in === true;
+  if (!hasAccount) {
+    setSetupGate(true, "register");
+  } else if (!loggedIn) {
+    setSetupGate(true, "login");
+  } else {
+    setSetupGate(false, "");
+  }
+
+  const out = $("#account-logged-out");
+  const inn = $("#account-logged-in");
+  if (!out || !inn) return;
+  if (loggedIn && d.user) {
+    out.style.display = "none";
+    inn.style.display = "block";
+    const u = d.user;
+    if ($("#account-display-name")) $("#account-display-name").textContent = u.displayName || u.username || "—";
+    if ($("#account-server-id")) $("#account-server-id").textContent = d.server_id || "—";
+    if ($("#account-pubkey")) $("#account-pubkey").textContent = u.publicKey || "—";
+    if ($("#account-signing-status")) {
+      $("#account-signing-status").textContent = d.signing
+        ? "assinados com esta conta"
+        : "login ok, sem chave";
+    }
+  } else {
+    out.style.display = "block";
+    inn.style.display = "none";
+  }
+}
+
+async function refreshAccountInfo() {
+  try {
+    const r = await fetch("/api/account/me", { credentials: "same-origin" });
+    const d = await r.json();
+    applyAccountMe(d);
+    return d;
+  } catch {
+    // Sem CouchDB ainda: mantém gate até conseguir consultar
+    applyAccountMe({ logged_in: false, has_account: false, setup_required: true });
+    return null;
+  }
+}
+
+async function accountRegister() {
+  const username = $("#account-username")?.value?.trim();
+  const password = $("#account-password")?.value || "";
+  showAccountMsg("");
+  try {
+    const r = await fetch("/api/account/register", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || "falha no cadastro");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true, setup_required: false });
+    toast("Conta criada — baixe o backup com a chave!");
+    showAccountMsg(d.message || "Conta criada. Use “Baixar backup + chave”.", false);
+  } catch (e) {
+    showAccountMsg(String(e.message || e), true);
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function setupRegister() {
+  const username = $("#setup-username")?.value?.trim();
+  const password = $("#setup-password")?.value || "";
+  const confirm = $("#setup-password-confirm")?.value || "";
+  showSetupMsg("");
+  if (password !== confirm) {
+    showSetupMsg("As senhas não coincidem", true);
+    return;
+  }
+  try {
+    const r = await fetch("/api/account/register", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || "falha no cadastro");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true, setup_required: false });
+    toast("Conta criada — sistema liberado");
+    // incentiva backup na aba Perfil
+    document.querySelector('.tab[data-tab="profile"]')?.click();
+    showAccountMsg("Baixe o backup com a chave privada e guarde em local seguro.", false);
+  } catch (e) {
+    showSetupMsg(String(e.message || e), true);
+  }
+}
+
+async function accountLogin() {
+  const username = $("#account-username")?.value?.trim();
+  const password = $("#account-password")?.value || "";
+  showAccountMsg("");
+  try {
+    const r = await fetch("/api/account/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "falha no login");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true, setup_required: false });
+    toast("Login ok — scrapes serão assinados");
+    showAccountMsg("");
+  } catch (e) {
+    showAccountMsg(String(e.message || e), true);
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function accountLogout() {
+  try {
+    await fetch("/api/account/logout", { method: "POST", credentials: "same-origin" });
+  } catch {}
+  await refreshAccountInfo();
+  toast("Sessão encerrada — faça login para continuar");
+}
+
+async function gateLogin() {
+  const username = $("#gate-login-username")?.value?.trim();
+  const password = $("#gate-login-password")?.value || "";
+  showGateLoginMsg("");
+  try {
+    const r = await fetch("/api/account/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "falha no login");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true });
+    toast("Login ok — sistema liberado");
+  } catch (e) {
+    showGateLoginMsg(String(e.message || e), true);
+  }
+}
+
+async function gateImport() {
+  const file = $("#gate-import-file")?.files?.[0];
+  const password = $("#gate-import-password")?.value || "";
+  if (!file) { showGateLoginMsg("Selecione o arquivo de backup", true); return; }
+  showGateLoginMsg("");
+  try {
+    const text = await file.text();
+    const backup = JSON.parse(text);
+    const r = await fetch("/api/account/import", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup, password }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "falha na importação");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true });
+    toast("Conta recuperada — sistema liberado");
+  } catch (e) {
+    showGateLoginMsg(String(e.message || e), true);
+  }
+}
+
+function saveTextViaShell(filename, content) {
+  return new Promise((resolve, reject) => {
+    if (!window.parent || window.parent === window) {
+      resolve(null); // não está no shell Neutralino
+      return;
+    }
+    const requestId = `save-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const onMsg = (ev) => {
+      const data = ev.data;
+      if (!data || data.type !== "buscalogo:save-file-result" || data.requestId !== requestId) return;
+      window.removeEventListener("message", onMsg);
+      clearTimeout(timer);
+      if (data.cancelled) resolve({ cancelled: true });
+      else if (data.ok) resolve({ path: data.path });
+      else reject(new Error(data.error || "falha ao salvar"));
+    };
+    const timer = setTimeout(() => {
+      window.removeEventListener("message", onMsg);
+      reject(new Error("tempo esgotado ao escolher o arquivo"));
+    }, 180000);
+    window.addEventListener("message", onMsg);
+    window.parent.postMessage({
+      type: "buscalogo:save-file",
+      requestId,
+      filename,
+      content,
+    }, "*");
+  });
+}
+
+function downloadBlobFallback(filename, text) {
+  const blob = new Blob([text], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function accountExport() {
+  try {
+    const r = await fetch("/api/account/export", { credentials: "same-origin" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || "falha ao exportar");
+    }
+    const text = await r.text();
+    const dispo = r.headers.get("Content-Disposition") || "";
+    const m = /filename="?([^"]+)"?/.exec(dispo);
+    const name = m ? m[1] : `buscalogo-backup-${Date.now()}.json`;
+
+    const viaShell = await saveTextViaShell(name, text);
+    if (viaShell === null) {
+      downloadBlobFallback(name, text);
+      toast("Backup baixado — guarde em local seguro");
+      return;
+    }
+    if (viaShell.cancelled) {
+      toast("Salvamento cancelado");
+      return;
+    }
+    toast(`Backup salvo em ${viaShell.path}`, 5000);
+  } catch (e) {
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function accountImport() {
+  const file = $("#account-import-file")?.files?.[0];
+  const password = $("#account-import-password")?.value || "";
+  if (!file) { toast("Selecione o arquivo de backup"); return; }
+  showAccountMsg("");
+  try {
+    const text = await file.text();
+    const backup = JSON.parse(text);
+    const r = await fetch("/api/account/import", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup, password }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "falha na importação");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true, setup_required: false });
+    toast("Conta recuperada");
+    showAccountMsg(d.message || "Conta recuperada", false);
+  } catch (e) {
+    showAccountMsg(String(e.message || e), true);
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function setupImport() {
+  const file = $("#setup-import-file")?.files?.[0];
+  const password = $("#setup-import-password")?.value || "";
+  if (!file) { showSetupMsg("Selecione o arquivo de backup", true); return; }
+  showSetupMsg("");
+  try {
+    const text = await file.text();
+    const backup = JSON.parse(text);
+    const r = await fetch("/api/account/import", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup, password }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "falha na importação");
+    applyAccountMe(d.me || { logged_in: true, user: d.user, signing: true, has_account: true, setup_required: false });
+    toast("Conta recuperada — sistema liberado");
+  } catch (e) {
+    showSetupMsg(String(e.message || e), true);
+  }
+}
+
 async function refreshExtensionInfo() {
   try {
     const r = await fetch("/api/extension/info");
@@ -589,6 +1087,8 @@ async function refreshExtensionInfo() {
     const rootEl = $("#ext-root-path");
     const chromeEl = $("#ext-chrome-ready");
     const firefoxEl = $("#ext-firefox-ready");
+    const openStore = $("#ext-open-store");
+    if (openStore) openStore.disabled = !(d.chrome?.browser_ok);
     if (rootEl) rootEl.textContent = d.root || "\u2014";
     if (chromeEl) {
       const parts = [];
@@ -615,6 +1115,24 @@ async function refreshExtensionInfo() {
   } catch {
     const rootEl = $("#ext-root-path");
     if (rootEl) rootEl.textContent = "erro ao consultar";
+  }
+}
+
+async function openChromeWebStore() {
+  showExtMsg("");
+  try {
+    const r = await fetch("/api/extension/open-store", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browser: "chrome" }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || d.message || "falha ao abrir a loja");
+    showExtMsg(d.message || "Chrome Web Store aberta.");
+    toast("Chrome Web Store aberta");
+  } catch (e) {
+    showExtMsg(String(e.message || e));
+    toast("Erro: " + (e.message || e), 4000);
   }
 }
 
@@ -671,8 +1189,13 @@ async function openExtensionDir(browser) {
 }
 
 async function refreshCouchInfo() {
+  if (couchInfoBusy) return;
+  couchInfoBusy = true;
   try {
-    const r = await fetch("/api/couchdb/info");
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch("/api/couchdb/info", { signal: ctrl.signal });
+    clearTimeout(t);
     const d = await r.json();
     const info = d.info || {};
     const urlEl = $("#couch-url");
@@ -689,9 +1212,24 @@ async function refreshCouchInfo() {
       const dbs = info.databases || [];
       countEl.textContent = info.reachable ? `${dbs.length} (${info.version || "?"})` : "offline";
     }
+    const scrapeEl = $("#couch-scraping-size");
+    if (scrapeEl) {
+      const sc = info.scraping || {};
+      if (!info.reachable) scrapeEl.textContent = "offline";
+      else if (sc.legacy_bytes != null || sc.file_size != null) {
+        const hostN = sc.host_databases ?? 0;
+        const parts = [];
+        if (sc.legacy_bytes > 0) parts.push(`legado ${fmtBytes(sc.legacy_bytes)}`);
+        if (hostN > 0) parts.push(`${hostN} site(s)`);
+        if (!parts.length) parts.push(`${fmtBytes(sc.file_size || 0)} · ${sc.doc_count ?? 0} docs`);
+        scrapeEl.textContent = parts.join(" · ");
+      } else scrapeEl.textContent = "\u2014";
+    }
   } catch {
     const countEl = $("#couch-dbs-count");
     if (countEl) countEl.textContent = "erro";
+  } finally {
+    couchInfoBusy = false;
   }
 }
 
@@ -1071,19 +1609,34 @@ async function doDNS(action) {
   setTimeout(() => { btn.textContent = orig; btn.style.color = ""; fetchStatus(); }, 2500);
 }
 
-/* Logs */
+/* Logs — DOM só na aba Logs (EventSource contínuo travava o WebView). */
 function appendLog(e) {
-  if (logFilter && e.source !== logFilter) return;
   logLines.push(e);
-  if (logLines.length > 1000) logLines.shift();
+  if (logLines.length > 300) logLines.shift();
+  const logsTab = document.getElementById("tab-logs");
+  if (!logsTab?.classList.contains("active")) return;
+  if (document.visibilityState === "hidden") return;
+  if (logFilter && e.source !== logFilter) return;
+  paintLogLine(e);
+}
+
+function paintLogLine(e) {
   const el = document.createElement("span");
   el.className = "log-line " + e.level;
   const t = new Date(e.time).toLocaleTimeString("pt-BR");
   el.innerHTML = `<span class="t">${t}</span> <span class="src">[${e.source}]</span> ${escapeHtml(e.message)}`;
   const pre = $("#log");
+  if (!pre) return;
   pre.appendChild(el);
-  while (pre.children.length > 1000) pre.removeChild(pre.firstChild);
-  if ($("#log-autoscroll").checked) pre.scrollTop = pre.scrollHeight;
+  while (pre.children.length > 300) pre.removeChild(pre.firstChild);
+  if ($("#log-autoscroll")?.checked) pre.scrollTop = pre.scrollHeight;
+}
+
+function renderLogView() {
+  const pre = $("#log");
+  if (!pre) return;
+  pre.innerHTML = "";
+  logLines.filter(l => !logFilter || l.source === logFilter).forEach(paintLogLine);
 }
 
 function refreshLogSources() {
@@ -1104,18 +1657,33 @@ function refreshLogSources() {
 }
 
 function connectLogs() {
-  const es = new EventSource("/api/logs/stream");
-  es.onmessage = (ev) => {
+  if (logStream) {
+    try { logStream.close(); } catch {}
+    logStream = null;
+  }
+  logStream = new EventSource("/api/logs/stream");
+  logStream.onmessage = (ev) => {
     try { appendLog(JSON.parse(ev.data)); } catch {}
   };
-  es.onerror = () => { es.close(); setTimeout(connectLogs, 2000); };
+  logStream.onerror = () => {
+    try { logStream.close(); } catch {}
+    logStream = null;
+    if (logReconnectTimer) return;
+    logReconnectTimer = setTimeout(() => {
+      logReconnectTimer = null;
+      connectLogs();
+    }, 5000);
+  };
 }
 
 async function loadRecent() {
   try {
-    const r = await fetch("/api/logs/recent?n=200");
+    const r = await fetch("/api/logs/recent?n=100");
     const arr = await r.json();
-    arr.forEach(appendLog);
+    arr.forEach(e => {
+      logLines.push(e);
+      if (logLines.length > 300) logLines.shift();
+    });
   } catch {}
 }
 
@@ -1200,6 +1768,32 @@ document.addEventListener("click", (ev) => {
   if (ev.target.id === "scraper-add-url") addScraperURL();
   if (ev.target.id === "scraper-clear-queue") clearScraperQueue();
   if (ev.target.id === "scraper-refresh-results") refreshScraperInfo();
+  if (ev.target.id === "scraper-sites-refresh") refreshScrapedSites();
+  const delSite = ev.target.closest(".scraper-del-site");
+  if (delSite) {
+    deleteScrapedSite(delSite.dataset.hostname);
+    return;
+  }
+  if (ev.target.closest(".scraper-del-legacy")) {
+    deleteLegacyScrapingDB();
+    return;
+  }
+  const delDoc = ev.target.closest(".scraper-del-doc");
+  if (delDoc) {
+    deleteScraperDoc(delDoc.dataset.docId);
+    return;
+  }
+  if (ev.target.id === "ext-open-store") openChromeWebStore();
+  if (ev.target.id === "account-register") accountRegister();
+  if (ev.target.id === "account-login") accountLogin();
+  if (ev.target.id === "account-logout") accountLogout();
+  if (ev.target.id === "account-export") accountExport();
+  if (ev.target.id === "account-import") accountImport();
+  if (ev.target.id === "account-refresh") refreshAccountInfo();
+  if (ev.target.id === "setup-register") setupRegister();
+  if (ev.target.id === "setup-import") setupImport();
+  if (ev.target.id === "gate-login") gateLogin();
+  if (ev.target.id === "gate-import") gateImport();
   if (ev.target.id === "ext-launch-chrome") launchExtension("chrome");
   if (ev.target.id === "ext-launch-firefox") launchExtension("firefox");
   if (ev.target.id === "ext-shortcut-chrome") createChromeShortcut();
@@ -1234,8 +1828,7 @@ document.addEventListener("click", (ev) => {
 
 $("#log-source")?.addEventListener("change", (e) => {
   logFilter = e.target.value;
-  $("#log").innerHTML = "";
-  logLines.filter(l => !logFilter || l.source === logFilter).forEach(l => appendLog(l));
+  renderLogView();
 });
 
 $("#site-type")?.addEventListener("change", (e) => {
@@ -1433,8 +2026,14 @@ async function doUpdateInstall() {
   }
 }
 
-fetchStatus();
-fetchDNSStatus();
+// Gate primeiro: sem login o painel fica bloqueado
+document.body.classList.add("setup-locked");
+refreshAccountInfo().then(() => {
+  fetchStatus();
+  fetchDNSStatus();
+  renderSites();
+  refreshExtensionInfo();
+});
 document.querySelectorAll("[id^='cfg-']").forEach(el => {
   el.addEventListener("input", markConfigDirty);
   el.addEventListener("change", markConfigDirty);
@@ -1445,9 +2044,27 @@ document.querySelectorAll("[id^='cfg-']").forEach(el => {
   el.addEventListener("input", markP2PConfigDirty);
   el.addEventListener("change", markP2PConfigDirty);
 });
-setInterval(fetchStatus, 3000);
-setInterval(refreshUpdateStatus, 5000);
-setInterval(fetchDNSStatus, 5000);
+setInterval(() => {
+  if (document.visibilityState === "hidden") return;
+  fetchStatus();
+}, 10000);
+setInterval(() => {
+  if (document.visibilityState === "hidden") return;
+  const scraperTab = document.getElementById("tab-scraper");
+  if (!scraperTab?.classList.contains("active")) return;
+  const now = Date.now();
+  if (now - lastScraperPollAt < 25000) return;
+  lastScraperPollAt = now;
+  refreshScraperInfo();
+}, 8000);
+setInterval(() => {
+  if (document.visibilityState === "hidden") return;
+  refreshUpdateStatus();
+}, 45000);
+setInterval(() => {
+  if (document.visibilityState === "hidden") return;
+  fetchDNSStatus();
+}, 45000);
 loadRecent().then(connectLogs);
 
 $("#dns-upstream-add").addEventListener("click", addUpstream);

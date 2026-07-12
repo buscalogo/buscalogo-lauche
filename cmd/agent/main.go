@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"buscalogo-agent/internal/api"
+	"buscalogo-agent/internal/account"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
@@ -83,15 +84,18 @@ func main() {
 	ygg := yggdrasil.New(cfg, buf)
 	cdb := couchdb.New(cfg, buf)
 	scr := scraper.New(cfg, cdb, buf)
+	acct := account.New(cdb, buf)
+	scr.SetSigner(acct)
 	var scrapeStore *scraper.Store
 	if cdb != nil {
 		scrapeStore = scraper.NewStore(cdb)
+		scrapeStore.SetSigner(acct)
 	}
 	p2pConn := p2p.New(cfg, scrapeStore, buf)
 	dnsMgr := dns.NewManager(cfg, buf, cdns)
 	sitesMgr := sites.New(cfg, buf)
 	updater := update.New(cfg, buf)
-	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, p2pConn, dnsMgr, sitesMgr, updater)
+	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, acct, p2pConn, dnsMgr, sitesMgr, updater)
 	updater.StartBackground()
 
 	// Garante o hosts file dos sites ANTES de gerar o Corefile do CoreDNS.
@@ -120,6 +124,9 @@ func main() {
 	if cfg.CouchDB.Enabled {
 		cdb.StartWatchdog()
 		time.Sleep(2 * time.Second)
+		if _, err := acct.EnsureServerID(); err != nil {
+			buf.Warnf("agent", "server_id da conta: %v", err)
+		}
 	}
 	startService("Scraper", cfg.Scraper.Enabled, scr.Start)
 	startService("P2P", cfg.P2PEnabled(), p2pConn.Start)

@@ -154,6 +154,38 @@ func (e *Engine) ClearQueue() {
 	}
 }
 
+// PurgeHostname remove da fila e do mapa "já processado" tudo ligado ao site.
+func (e *Engine) PurgeHostname(hostname string) (queuedRemoved int, processedRemoved int) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return 0, 0
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for p, q := range e.queues {
+		kept := q[:0]
+		for _, t := range q {
+			if t != nil && hostnameMatchesSite(t.Hostname, hostname) {
+				queuedRemoved++
+				continue
+			}
+			kept = append(kept, t)
+		}
+		e.queues[p] = kept
+	}
+	for u := range e.processed {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		if hostnameMatchesSite(parsed.Hostname(), hostname) {
+			delete(e.processed, u)
+			processedRemoved++
+		}
+	}
+	return queuedRemoved, processedRemoved
+}
+
 func (e *Engine) Stats() QueueStats {
 	e.mu.Lock()
 	defer e.mu.Unlock()

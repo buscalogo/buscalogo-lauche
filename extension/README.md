@@ -24,6 +24,9 @@ Não há coleta de dados remotos — só Agent local. O ponto sensível da revis
 
 ## Instalação local (sem loja)
 
-No painel do agente → aba **Scraper** → **Abrir Chrome com extensão**.
+**Chrome (recomendado):** [Chrome Web Store — BuscaLogo Agent](https://chromewebstore.google.com/detail/buscalogo-agent/gecmkbanhikgnhpcdibplcfndapclneh)
 
-Ou sideload manual: `chrome://extensions` / `about:debugging` apontando para `chrome/` ou `firefox/`.
+No painel do agente → aba **Scraper** → **Instalar na Chrome Web Store**, ou sideload:
+`chrome://extensions` / `about:debugging` apontando para `chrome/` ou `firefox/`.
+
+Ou: **Abrir Chrome (sideload)** no painel (perfil dedicado com `--load-extension`).
