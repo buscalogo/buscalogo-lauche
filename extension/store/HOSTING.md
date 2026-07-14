@@ -56,11 +56,34 @@ npx http-server -p 4000 -a 127.0.0.1 --cors
 
 ## Empacotar de novo (mesma chave)
 
+O manifesto da loja **não** pode ter `update_url`. Para o CRX auto-hospedado,
+adicione só na hora do pack:
+
 ```bash
+# injeta update_url temporariamente
+python3 - <<'PY'
+import json
+p = "extension/chrome/manifest.json"
+m = json.load(open(p))
+m["update_url"] = "http://extensions.bl:4000/updates.xml"
+json.dump(m, open(p, "w"), indent=2, ensure_ascii=False)
+open(p, "a").write("\n")
+PY
+
 google-chrome --pack-extension="$(pwd)/extension/chrome" \
   --pack-extension-key="$(pwd)/extension/chrome.pem"
 cp -f extension/chrome.crx extension/store/chrome.crx
 chmod 644 extension/store/chrome.crx
+
+# remove update_url de novo (Web Store / pack.sh)
+python3 - <<'PY'
+import json
+p = "extension/chrome/manifest.json"
+m = json.load(open(p))
+m.pop("update_url", None)
+json.dump(m, open(p, "w"), indent=2, ensure_ascii=False)
+open(p, "a").write("\n")
+PY
 ```
 
 Bump `version` no `manifest.json` **e** no `updates.xml`.

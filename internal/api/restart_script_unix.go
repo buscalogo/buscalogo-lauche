@@ -1,3 +1,5 @@
+//go:build unix
+
 package api
 
 import (
@@ -40,4 +42,8 @@ exec "$DAEMON" --no-tray
 	}
 	buf.Infof("api", "reinício agendado (script=%s, pid=%d)", scriptPath, cmd.Process.Pid)
 	return nil
+}
+
+func reexecDaemon(daemon string, args, env []string) error {
+	return syscall.Exec(daemon, args, env)
 }

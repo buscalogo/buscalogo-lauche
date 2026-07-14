@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -30,6 +31,7 @@ type Data struct {
 	Sites     []Site    `yaml:"sites" json:"sites"`
 	Scraper   Scraper   `yaml:"scraper" json:"scraper"`
 	P2P       P2P       `yaml:"p2p" json:"p2p"`
+	Registry  Registry  `yaml:"registry" json:"registry"`
 	Update    Update    `yaml:"update" json:"update"`
 	Cache     Cache     `yaml:"cache" json:"cache"`
 	Bootstrap []string  `yaml:"bootstrap" json:"bootstrap"`
@@ -45,9 +47,20 @@ type API struct {
 
 // Web é o servidor de hospedagem de sites (.bl).
 type Web struct {
-	Listen          string `yaml:"listen" json:"listen"`
-	Port            int    `yaml:"port" json:"port"`
-	ExternalListen  bool   `yaml:"external_listen" json:"external_listen"` // escutar em todas as interfaces (inclui Yggdrasil)
+	Listen         string `yaml:"listen" json:"listen"`
+	Port           int    `yaml:"port" json:"port"`
+	ExternalListen bool   `yaml:"external_listen" json:"external_listen"` // escutar em todas as interfaces (inclui Yggdrasil)
+	TLS            WebTLS `yaml:"tls" json:"tls"`
+}
+
+// WebTLS configura HTTPS (:443). Certs em cert_dir; modo self_signed até existir CA BuscaLogo.
+type WebTLS struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Port     int    `yaml:"port" json:"port"`           // default 443
+	CertDir  string `yaml:"cert_dir" json:"cert_dir"`   // relativo a data/ ou absoluto
+	Mode     string `yaml:"mode" json:"mode"`           // self_signed | files | ca (futuro)
+	CertFile string `yaml:"cert_file" json:"cert_file"` // opcional (mode=files)
+	KeyFile  string `yaml:"key_file" json:"key_file"`
 }
 
 // Site mapeia um host .bl a um diretório no disco (static) ou a um upstream (proxy).
@@ -75,6 +88,25 @@ type Yggdrasil struct {
 	ExternalBinary string   `yaml:"external_binary" json:"external_binary"`
 	Peers          []string `yaml:"peers" json:"peers"`
 	DnsServers     []string `yaml:"dns_servers" json:"dns_servers"` // resolvedores DNS na rede Yggdrasil
+}
+
+// Registry é o ledger .bl (Badger/SQLite + GossipSub sobre Ygg).
+type Registry struct {
+	Enabled        *bool    `yaml:"enabled" json:"enabled"`
+	Engine         string   `yaml:"engine" json:"engine"` // badger | sqlite
+	Path           string   `yaml:"path" json:"path"`
+	GossipTopic    string   `yaml:"gossip_topic" json:"gossip_topic"`
+	ListenPort     int      `yaml:"listen_port" json:"listen_port"`
+	BootstrapPeers []string `yaml:"bootstrap_peers" json:"bootstrap_peers"`
+	// StaticPeers são IPv6 Ygg de outros Agents (funciona entre redes diferentes).
+	StaticPeers []string `yaml:"static_peers" json:"static_peers"`
+}
+
+func (r Registry) EnabledOrDefault() bool {
+	if r.Enabled == nil {
+		return true
+	}
+	return *r.Enabled
 }
 
 // DefaultCouchDBDatabases são os bancos padrão (compatível com bl-scraper-server).
@@ -194,7 +226,11 @@ func Default() *Config {
 	return &Config{Data: Data{
 		Node: Node{Name: "BuscaLogo Node"},
 		API:  API{Listen: "127.0.0.1:9970"},
-		Web:  Web{Listen: "127.0.0.1", Port: 80, ExternalListen: true},
+		Web: Web{Listen: "127.0.0.1", Port: 80, ExternalListen: true, TLS: WebTLS{
+			Enabled: true,
+			Port:    443,
+			Mode:    "self_signed",
+		}},
 		DNS: DNS{
 			Enabled:       true,
 			Mode:          "local",
@@ -210,7 +246,7 @@ func Default() *Config {
 			Peers:   DefaultPeers,
 		},
 		CouchDB: CouchDB{
-			Enabled:   true,
+			Enabled:   platformDefaultCouchEnabled(),
 			Mode:      "own",
 			Listen:    "127.0.0.1",
 			Port:      5984,
@@ -230,6 +266,7 @@ func Default() *Config {
 			DefaultScheduleDays:  7,
 		},
 		P2P: DefaultP2P(),
+		Registry: DefaultRegistry(),
 		Update:  DefaultUpdate(),
 		Cache:   Cache{Size: 2048},
 	}}
@@ -306,7 +343,18 @@ func (c *Config) applyDefaults() {
 	if c.Web.Port == 0 {
 		c.Web.Port = 80
 	}
+	if c.Web.TLS.Port == 0 {
+		c.Web.TLS.Port = 443
+	}
+	if c.Web.TLS.Mode == "" {
+		// Config legada sem bloco tls → liga HTTPS self-signed (:443).
+		c.Web.TLS.Mode = "self_signed"
+		c.Web.TLS.Enabled = true
+	}
 	if c.DNS.Mode == "" {
+		c.DNS.Mode = "local"
+	}
+	if platformForceDNSLocal() && c.DNS.Mode == "system" {
 		c.DNS.Mode = "local"
 	}
 	if c.DNS.Listen == "" {
@@ -333,6 +381,10 @@ func (c *Config) applyDefaults() {
 	if c.CouchDB.Mode == "" {
 		c.CouchDB.Mode = "own"
 	}
+	// Windows: sem CouchDB embutido (~108MB) — desliga por padrão (use mode=external se tiver).
+	if runtime.GOOS == "windows" && c.CouchDB.Mode == "own" {
+		c.CouchDB.Enabled = false
+	}
 	if c.CouchDB.Listen == "" {
 		c.CouchDB.Listen = "127.0.0.1"
 	}
@@ -351,6 +403,82 @@ func (c *Config) applyDefaults() {
 	if c.P2P.MaxResultsPerQuery <= 0 {
 		c.P2P.MaxResultsPerQuery = 50
 	}
+	applyRegistryDefaults(&c.Registry)
+}
+
+// DefaultRegistryYggIP — seed público do ledger .bl (registry).
+// Pode sobrescrever em compile-time:
+//
+//	go build -ldflags "-X buscalogo-agent/internal/config.DefaultRegistryYggIP=200:..."
+//
+// Agents usam este IPv6 como static peer quando registry.static_peers está vazio.
+var DefaultRegistryYggIP = "200:63ac:4c32:e7f3:4db2:9c6e:6f3d:d088"
+
+func applyRegistryDefaults(r *Registry) {
+	if r.Engine == "" {
+		r.Engine = "badger"
+	}
+	if r.GossipTopic == "" {
+		r.GossipTopic = "/buscalogo/bl/v1"
+	}
+	if r.ListenPort == 0 {
+		r.ListenPort = 4401
+	}
+	// Bootstrap compile-time: só injeta se o usuário ainda não configurou peers.
+	if len(r.StaticPeers) == 0 && strings.TrimSpace(DefaultRegistryYggIP) != "" {
+		ip := strings.TrimSpace(DefaultRegistryYggIP)
+		ip = strings.Trim(ip, "[]")
+		r.StaticPeers = []string{ip}
+	}
+}
+
+// ApplyRegistryNodeDefaults força o perfil do nó seed público (sem scraper/Couch/P2P busca).
+func (c *Config) ApplyRegistryNodeDefaults() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	falseV := false
+	trueV := true
+	c.Scraper.Enabled = false
+	c.CouchDB.Enabled = false
+	c.P2P.Enabled = &falseV
+	c.Registry.Enabled = &trueV
+	c.Yggdrasil.Enabled = true
+	c.DNS.Enabled = true
+	c.Web.ExternalListen = true
+	if c.Web.Listen == "" || c.Web.Listen == "127.0.0.1" {
+		c.Web.Listen = "0.0.0.0"
+	}
+	if c.API.Listen == "" || strings.HasPrefix(c.API.Listen, "127.0.0.1:") {
+		port := "9970"
+		if _, p, ok := strings.Cut(c.API.Listen, ":"); ok && p != "" {
+			port = p
+		}
+		c.API.Listen = "0.0.0.0:" + port
+	}
+	if c.Node.Name == "" || c.Node.Name == "buscalogo" {
+		c.Node.Name = "buscalogo-registry"
+	}
+	c.Update.Enabled = &falseV
+	applyRegistryDefaults(&c.Registry)
+	return nil
+}
+
+// DefaultRegistry retorna a configuração padrão do ledger .bl.
+func DefaultRegistry() Registry {
+	en := true
+	return Registry{
+		Enabled:     &en,
+		Engine:      "badger",
+		GossipTopic: "/buscalogo/bl/v1",
+		ListenPort:  4401,
+	}
+}
+
+// RegistryEnabled indica se o ledger .bl deve iniciar.
+func (c *Config) RegistryEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Registry.EnabledOrDefault()
 }
 
 // P2PEnabled indica se o P2P deve iniciar (padrão: true).
@@ -383,6 +511,18 @@ func (c *Config) P2PYAML() (string, error) {
 		return "", fmt.Errorf("serializar p2p: %w", err)
 	}
 	return string(data), nil
+}
+
+// EnsureWebExternalListen liga web.external_listen para sites .bl na mesh.
+func (c *Config) EnsureWebExternalListen() error {
+	c.mu.Lock()
+	if c.Web.ExternalListen {
+		c.mu.Unlock()
+		return nil
+	}
+	c.Web.ExternalListen = true
+	c.mu.Unlock()
+	return c.Save()
 }
 
 // SetP2P atualiza a seção p2p e persiste no config.yaml.
@@ -557,6 +697,31 @@ func (c *Config) MergeJSON(in []byte) error {
 			err = json.Unmarshal(val, &base.Scraper)
 		case "p2p":
 			err = json.Unmarshal(val, &base.P2P)
+		case "registry":
+			var patch Registry
+			if err = json.Unmarshal(val, &patch); err == nil {
+				if patch.Enabled != nil {
+					base.Registry.Enabled = patch.Enabled
+				}
+				if patch.Engine != "" {
+					base.Registry.Engine = patch.Engine
+				}
+				if patch.Path != "" {
+					base.Registry.Path = patch.Path
+				}
+				if patch.GossipTopic != "" {
+					base.Registry.GossipTopic = patch.GossipTopic
+				}
+				if patch.ListenPort != 0 {
+					base.Registry.ListenPort = patch.ListenPort
+				}
+				if patch.BootstrapPeers != nil {
+					base.Registry.BootstrapPeers = patch.BootstrapPeers
+				}
+				if patch.StaticPeers != nil {
+					base.Registry.StaticPeers = patch.StaticPeers
+				}
+			}
 		case "update":
 			err = json.Unmarshal(val, &base.Update)
 		case "cache":

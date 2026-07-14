@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BuscaLogo Agent — WiX v4/v5 package.
+  Build (Windows): packaging/windows/build.ps1
+  Staging: make msi-stage
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="BuscaLogo Agent"
+      Manufacturer="BuscaLogo"
+      Version="$(var.Version)"
+      UpgradeCode="A7B3C1D0-4E5F-6789-ABCD-EF0123456789"
+      Scope="perMachine"
+      Language="1033">
+    <SummaryInformation
+        Description="BuscaLogo Agent — rede .bl (Yggdrasil), DNS e painel local"
+        Manufacturer="BuscaLogo" />
+
+    <MajorUpgrade
+        DowngradeErrorMessage="Já está instalada uma versão mais recente do BuscaLogo Agent."
+        Schedule="afterInstallInitialize" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPHELPLINK" Value="http://127.0.0.1:9970" />
+    <Property Id="ARPURLINFOABOUT" Value="https://buscalogo.com" />
+
+    <Feature Id="ProductFeature" Title="BuscaLogo Agent" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="StartMenuShortcuts" />
+      <ComponentRef Id="DataFolder" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="BuscaLogo" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DataRoot" Name="BuscaLogo" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="BuscaLogo" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="DaemonExe" Guid="B1C2D3E4-F5A6-7890-ABCD-111111111111">
+        <File Id="DaemonFile" Source="msi-stage\buscalogo-agentd.exe" KeyPath="yes" />
+        <ServiceInstall
+            Id="BuscaLogoServiceInstall"
+            Name="BuscaLogoAgent"
+            DisplayName="BuscaLogo Agent"
+            Description="Daemon BuscaLogo: Yggdrasil, DNS .bl, sites e painel em http://127.0.0.1:9970"
+            Type="ownProcess"
+            Start="auto"
+            ErrorControl="normal"
+            Account="LocalSystem"
+            Arguments="--service"
+            Vital="yes" />
+        <ServiceControl
+            Id="BuscaLogoServiceControl"
+            Name="BuscaLogoAgent"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
+        <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\BuscaLogoAgent">
+          <RegistryValue
+              Name="Environment"
+              Type="multiString"
+              Value="BUSCALOGO_HOME=[CommonAppDataFolder]BuscaLogo" />
+        </RegistryKey>
+      </Component>
+
+      <Component Id="NeutralinoExe" Guid="B1C2D3E4-F5A6-7890-ABCD-222222222222">
+        <File Id="NeutralinoFile" Source="msi-stage\buscalogo-agent.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Id="ResourcesNeu" Guid="B1C2D3E4-F5A6-7890-ABCD-333333333333">
+        <File Id="ResourcesFile" Source="msi-stage\resources.neu" KeyPath="yes" />
+      </Component>
+
+      <Component Id="TrayPng" Guid="B1C2D3E4-F5A6-7890-ABCD-444444444444">
+        <File Id="TrayFile" Source="msi-stage\trayIcon.png" KeyPath="yes" />
+      </Component>
+
+      <Component Id="WintunDll" Guid="B1C2D3E4-F5A6-7890-ABCD-555555555555">
+        <File Id="WintunFile" Source="msi-stage\wintun.dll" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Component Id="DataFolder" Directory="DataRoot" Guid="B1C2D3E4-F5A6-7890-ABCD-666666666666">
+      <CreateFolder />
+      <RegistryValue
+          Root="HKLM"
+          Key="Software\BuscaLogo\Agent"
+          Name="DataDir"
+          Type="string"
+          Value="[CommonAppDataFolder]BuscaLogo"
+          KeyPath="yes" />
+    </Component>
+
+    <Component Id="StartMenuShortcuts" Directory="ApplicationProgramsFolder" Guid="B1C2D3E4-F5A6-7890-ABCD-777777777777">
+      <Shortcut
+          Id="ShortcutNeutralino"
+          Name="BuscaLogo Agent"
+          Description="Painel BuscaLogo (Neutralino)"
+          Target="[INSTALLFOLDER]buscalogo-agent.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+      <Shortcut
+          Id="ShortcutTray"
+          Name="BuscaLogo Agent (bandeja)"
+          Description="Bandeja — não inicia um segundo daemon"
+          Target="[INSTALLFOLDER]buscalogo-agentd.exe"
+          Arguments="--tray-ui"
+          WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveProgramMenu" On="uninstall" />
+      <RegistryValue
+          Root="HKCU"
+          Key="Software\BuscaLogo\Agent"
+          Name="Installed"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>

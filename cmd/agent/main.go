@@ -6,39 +6,94 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
-	"buscalogo-agent/internal/api"
 	"buscalogo-agent/internal/account"
+	"buscalogo-agent/internal/api"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/dns"
+	"buscalogo-agent/internal/firewall"
+	"buscalogo-agent/internal/ledger"
 	"buscalogo-agent/internal/logx"
 	"buscalogo-agent/internal/p2p"
+	"buscalogo-agent/internal/p2pdomain"
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/process"
 	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
+	"buscalogo-agent/internal/store"
 	"buscalogo-agent/internal/tray"
 	"buscalogo-agent/internal/update"
+	"buscalogo-agent/internal/winsvc"
 	"buscalogo-agent/internal/yggdrasil"
 )
 
 func main() {
 	log.SetFlags(log.Ltime)
 	noTray := flag.Bool("no-tray", false, "executa sem systray (modo headless)")
+	asService := flag.Bool("service", false, "executa como serviço Windows (SCM)")
+	trayUI := flag.Bool("tray-ui", false, "só bandeja/UI — não inicia Ygg/DNS (espera o serviço)")
 	flag.Parse()
 
+	if *trayUI {
+		runTrayUIOnly()
+		return
+	}
+
+	if *asService {
+		if err := winsvc.Run(winsvc.ServiceName, func(stop <-chan struct{}) error {
+			return runAgent(stop, true)
+		}); err != nil {
+			log.Fatalf("serviço: %v", err)
+		}
+		return
+	}
+
+	stop := make(chan struct{})
+	if *noTray {
+		go func() {
+			sigs := make(chan os.Signal, 1)
+			signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+			<-sigs
+			close(stop)
+		}()
+		if err := runAgent(stop, true); err != nil {
+			log.Fatalf("agent: %v", err)
+		}
+		return
+	}
+
+	if err := runAgent(stop, false); err != nil {
+		log.Fatalf("agent: %v", err)
+	}
+}
+
+func runTrayUIOnly() {
+	cfg, err := config.Load()
+	panelURL := "http://127.0.0.1:9970"
+	if err == nil && cfg.API.Listen != "" {
+		panelURL = "http://" + cfg.API.Listen
+	}
+	buf := logx.NewBuffer(200)
+	buf.Infof("agent", "modo tray-ui (painel %s)", panelURL)
+	tray.RunUIOnly(panelURL, buf)
+}
+
+// runAgent inicia o stack completo. Quando headless=true, bloqueia até stop fechar.
+// Quando headless=false, corre o systray e encerra ao sair do tray.
+func runAgent(stop <-chan struct{}, headless bool) error {
 	home, err := paths.Home()
 	if err != nil {
-		log.Fatalf("home: %v", err)
+		return err
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return err
 	}
 
 	buf := logx.NewBuffer(cfg.Cache.Size)
@@ -59,8 +114,12 @@ func main() {
 	if couchListen == "" {
 		couchListen = "127.0.0.1"
 	}
-	log.Printf("CouchDB: http://%s:%d (modo=%s)", couchListen, couchPort, cfg.CouchDB.Mode)
-	log.Printf("Scraper: nativo Go → CouchDB/%s (enabled=%v)", "buscalogo_scraping", cfg.Scraper.Enabled)
+	scrapeBackend := "CouchDB/buscalogo_scraping"
+	if runtime.GOOS == "windows" {
+		scrapeBackend = "SQLite/data/scrape/index.sqlite"
+	}
+	log.Printf("CouchDB: http://%s:%d (modo=%s enabled=%v)", couchListen, couchPort, cfg.CouchDB.Mode, cfg.CouchDB.Enabled)
+	log.Printf("Scraper: nativo Go → %s (enabled=%v)", scrapeBackend, cfg.Scraper.Enabled)
 	log.Printf("P2P busca: %d signaling(s) (enabled=%v)", len(cfg.P2P.SignalingURLs), cfg.P2PEnabled())
 
 	buf.Infof("agent", "BuscaLogo Agent iniciando (home=%s)", home)
@@ -68,8 +127,8 @@ func main() {
 	buf.Infof("agent", "DNS resolver: %s:%d (modo=%s)", cfg.DNS.Listen, cfg.DNS.Port, cfg.DNS.Mode)
 	buf.Infof("agent", "Web sites: %s:%d (fallback 8080 se sem permissão)", cfg.Web.Listen, webPort)
 	buf.Infof("agent", "Yggdrasil modo=%s", cfg.Yggdrasil.Mode)
-	buf.Infof("agent", "CouchDB: http://%s:%d (modo=%s)", couchListen, couchPort, cfg.CouchDB.Mode)
-	buf.Infof("agent", "Scraper: nativo Go → CouchDB/buscalogo_scraping (enabled=%v)", cfg.Scraper.Enabled)
+	buf.Infof("agent", "CouchDB: http://%s:%d (modo=%s enabled=%v)", couchListen, couchPort, cfg.CouchDB.Mode, cfg.CouchDB.Enabled)
+	buf.Infof("agent", "Scraper: nativo Go → %s (enabled=%v)", scrapeBackend, cfg.Scraper.Enabled)
 	buf.Infof("agent", "P2P busca: %d signaling(s) enabled=%v", len(cfg.P2P.SignalingURLs), cfg.P2PEnabled())
 
 	postUpdate := os.Getenv("BUSCALOGO_POST_UPDATE") == "1"
@@ -80,25 +139,66 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
+	if runtime.GOOS == "windows" {
+		if err := firewall.EnsureBLInboundRules(buf, 4401, webPort, 443); err != nil {
+			buf.Warnf("agent", "firewall: %v", err)
+		}
+	}
+
 	cdns := coredns.New(cfg, buf)
 	ygg := yggdrasil.New(cfg, buf)
 	cdb := couchdb.New(cfg, buf)
 	scr := scraper.New(cfg, cdb, buf)
 	acct := account.New(cdb, buf)
-	scr.SetSigner(acct)
-	var scrapeStore *scraper.Store
-	if cdb != nil {
-		scrapeStore = scraper.NewStore(cdb)
+	scrapeStore, err := scraper.OpenScrapeStore(cdb, buf)
+	if err != nil {
+		buf.Errorf("agent", "índice de scrape: %v", err)
+	}
+	if scrapeStore != nil {
 		scrapeStore.SetSigner(acct)
+		scr.SetStore(scrapeStore)
+		scr.SetSigner(acct)
 	}
 	p2pConn := p2p.New(cfg, scrapeStore, buf)
 	dnsMgr := dns.NewManager(cfg, buf, cdns)
 	sitesMgr := sites.New(cfg, buf)
 	updater := update.New(cfg, buf)
-	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, acct, p2pConn, dnsMgr, sitesMgr, updater)
+
+	var ledgerEng *ledger.Engine
+	var domainGossip *p2pdomain.Service
+	var regStore store.Store
+	if cfg.RegistryEnabled() {
+		st, err := store.Open(cfg.Registry.Engine, cfg.Registry.Path)
+		if err != nil {
+			buf.Errorf("agent", "registry store: %v", err)
+		} else {
+			regStore = st
+			ledgerEng = ledger.NewEngine(st, buf)
+			ledgerEng.SetOnHostsWrite(func(path string) {
+				buf.Infof("ledger", "hosts atualizado: %s", path)
+				if cfg.DNS.Enabled {
+					_, _ = cdns.WriteCorefile()
+				}
+			})
+			if _, err := st.WriteHostsFile(); err != nil {
+				buf.Warnf("agent", "registry hosts: %v", err)
+			}
+			domainGossip = p2pdomain.New(ledgerEng, buf, cfg.Registry.GossipTopic, cfg.Registry.ListenPort)
+			domainGossip.SetYggPeersFn(func() []string {
+				return ygg.PeerAddresses()
+			})
+			domainGossip.SetStaticPeers(cfg.Registry.StaticPeers)
+			if len(cfg.Registry.StaticPeers) > 0 {
+				buf.Infof("agent", "registry static_peers: %v", cfg.Registry.StaticPeers)
+			} else if config.DefaultRegistryYggIP != "" {
+				buf.Infof("agent", "DefaultRegistryYggIP=%s (sem static_peers na config)", config.DefaultRegistryYggIP)
+			}
+		}
+	}
+
+	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, acct, p2pConn, dnsMgr, sitesMgr, updater, ledgerEng, domainGossip)
 	updater.StartBackground()
 
-	// Garante o hosts file dos sites ANTES de gerar o Corefile do CoreDNS.
 	if err := sitesMgr.SyncHosts(); err != nil {
 		buf.Warnf("agent", "escrever sites.hosts: %v", err)
 	}
@@ -116,25 +216,50 @@ func main() {
 	if cfg.Yggdrasil.Enabled {
 		time.Sleep(1500 * time.Millisecond)
 	}
+	if domainGossip != nil && cfg.Yggdrasil.Enabled {
+		go func() {
+			for i := 0; i < 120; i++ {
+				ip := ygg.SelfAddressReady()
+				if ip == "" {
+					time.Sleep(time.Second)
+					continue
+				}
+				if err := domainGossip.Start(context.Background(), ip, nil, cfg.Registry.BootstrapPeers); err != nil {
+					buf.Warnf("agent", "p2pdomain: %v (tentativa %d)", err, i+1)
+					time.Sleep(time.Second)
+					continue
+				}
+				time.Sleep(3 * time.Second)
+				res := domainGossip.SyncNow(context.Background())
+				buf.Infof("agent", "p2pdomain sync inicial: connected=%d applied=%d tried=%d peers=%d",
+					res.Connected, res.Applied, res.Tried, res.Peers)
+				return
+			}
+			buf.Warnf("agent", "p2pdomain: Ygg IPv6/TUN ainda indisponível — gossip adiado (verifique wintun.dll / Admin)")
+		}()
+	}
 	startService("CoreDNS", cfg.DNS.Enabled, cdns.Start)
 	if cfg.DNS.Enabled {
 		time.Sleep(500 * time.Millisecond)
+		dnsMgr.EnsureSystemIntegration()
 	}
 	startService("CouchDB", cfg.CouchDB.Enabled, cdb.Start)
 	if cfg.CouchDB.Enabled {
 		cdb.StartWatchdog()
 		time.Sleep(2 * time.Second)
-		if _, err := acct.EnsureServerID(); err != nil {
-			buf.Warnf("agent", "server_id da conta: %v", err)
-		}
 	}
+	if _, err := acct.EnsureServerID(); err != nil {
+		buf.Warnf("agent", "server_id da conta: %v", err)
+	} else {
+		buf.Infof("agent", "conta storage=%s", acct.StorageBackend())
+	}
+	go acct.RestoreSessionRetry(15, time.Second)
 	startService("Scraper", cfg.Scraper.Enabled, scr.Start)
 	startService("P2P", cfg.P2PEnabled(), p2pConn.Start)
 	if err := sitesMgr.Start(); err != nil {
 		buf.Errorf("agent", "servidor de sites: %v", err)
 	}
 
-	// Pós-atualização: segunda tentativa para serviços que demoram (CouchDB, web).
 	if postUpdate {
 		go func() {
 			time.Sleep(8 * time.Second)
@@ -178,7 +303,6 @@ func main() {
 
 	panelURL := "http://" + cfg.API.Listen
 	log.Printf("painel web pronto em %s", panelURL)
-	log.Printf("acesse via navegador: %s", panelURL)
 	buf.Infof("agent", "painel web em %s", panelURL)
 
 	shutdown := func() {
@@ -191,17 +315,21 @@ func main() {
 		_ = cdb.Stop()
 		_ = scr.Stop()
 		_ = p2pConn.Stop()
+		if domainGossip != nil {
+			_ = domainGossip.Stop()
+		}
+		if regStore != nil {
+			_ = regStore.Close()
+		}
 		_ = ygg.Stop()
 		buf.Infof("agent", "encerrado")
 	}
 
-	if *noTray {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	if headless {
 		buf.Infof("agent", "modo headless (sem systray)")
-		<-sigs
+		<-stop
 		shutdown()
-		return
+		return nil
 	}
 
 	env := tray.CheckEnvironment()
@@ -209,13 +337,12 @@ func main() {
 	buf.Infof("agent", "systray ambiente: desktop=%s ok=%v", env.Desktop, env.OK)
 	if !env.OK {
 		log.Printf("AVISO systray: %s", env.Warning)
-		log.Printf("systray ajuda: %s", env.Details)
 		buf.Warnf("agent", "systray pode não aparecer: %s", env.Warning)
-		buf.Warnf("agent", "systray ajuda: %s", env.Details)
 	}
 
 	tray.New(panelURL, buf, cfg, cdns, ygg, cdb, scr, sitesMgr, nil).Run()
 	shutdown()
+	return nil
 }
 
 func cleanupStaleProcesses(buf *logx.Buffer) {

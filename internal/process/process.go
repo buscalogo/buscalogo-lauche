@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"buscalogo-agent/internal/logx"
@@ -51,6 +48,7 @@ type Managed struct {
 	startedAt     time.Time
 	restartCount  int64
 	stopRequested bool
+	watchGen      uint64 // incrementa a cada Start; cancela restart antigo
 	watchDone     chan struct{}
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -78,13 +76,48 @@ func (m *Managed) SetEnv(env []string) {
 
 func (m *Managed) Start() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	switch m.state {
-	case StateRunning, StateStarting, StateStopping:
-		return fmt.Errorf("%s já está em execução", m.opts.Name)
+	case StateRunning, StateStarting:
+		m.mu.Unlock()
+		return nil // idempotente — não matar o filho com KillExisting externo
+	case StateStopping:
+		m.mu.Unlock()
+		return fmt.Errorf("%s está parando", m.opts.Name)
 	case StateDisabled:
+		m.mu.Unlock()
 		return fmt.Errorf("%s está desabilitado", m.opts.Name)
+	}
+
+	// Cancela watch antigo (ex.: backoff de AutoRestart) antes de um novo Start.
+	// Sem isso, dois watches competem: o antigo mata o processo novo a cada N segundos.
+	oldCancel := m.cancel
+	oldDone := m.watchDone
+	oldCmd := m.cmd
+	m.watchGen++
+	gen := m.watchGen
+	m.mu.Unlock()
+
+	if oldCancel != nil {
+		oldCancel()
+	}
+	// cancel só cobre o select do backoff; se o watch está em cmd.Wait, precisa matar.
+	if oldCmd != nil && oldCmd.Process != nil {
+		killProcessGroup(oldCmd.Process.Pid)
+	}
+	if oldDone != nil {
+		select {
+		case <-oldDone:
+		case <-time.After(m.opts.StopTimeout):
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == StateRunning || m.state == StateStarting {
+		return nil
+	}
+	if m.watchGen != gen {
+		return nil
 	}
 
 	m.stopRequested = false
@@ -100,7 +133,7 @@ func (m *Managed) Start() error {
 		m.watchDone = nil
 		return err
 	}
-	go m.watch()
+	go m.watch(gen)
 	return nil
 }
 
@@ -121,10 +154,7 @@ func (m *Managed) spawnLocked() error {
 	}
 	cmd.Stdout = logx.SourceWriter{Buffer: m.buf, Source: m.opts.LogSource, Level: "STDOUT"}
 	cmd.Stderr = logx.SourceWriter{Buffer: m.buf, Source: m.opts.LogSource, Level: "STDERR"}
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:  true,
-		Pdeathsig: syscall.SIGTERM, // filho morre se o agente pai morrer (SIGKILL incluído)
-	}
+	setSpawnSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -136,10 +166,21 @@ func (m *Managed) spawnLocked() error {
 	return nil
 }
 
-func (m *Managed) watch() {
-	defer close(m.watchDone)
+func (m *Managed) watch(gen uint64) {
+	m.mu.Lock()
+	done := m.watchDone
+	m.mu.Unlock()
+	if done == nil {
+		return
+	}
+	defer close(done)
+
 	for {
 		m.mu.Lock()
+		if m.watchGen != gen {
+			m.mu.Unlock()
+			return
+		}
 		cmd := m.cmd
 		m.mu.Unlock()
 		if cmd == nil {
@@ -153,6 +194,10 @@ func (m *Managed) watch() {
 		}
 
 		m.mu.Lock()
+		if m.watchGen != gen {
+			m.mu.Unlock()
+			return
+		}
 		if m.stopRequested {
 			m.state = StateStopped
 			m.buf.Infof(m.opts.LogSource, "%s parado (exit=%d)", m.opts.Name, exitCode)
@@ -174,14 +219,15 @@ func (m *Managed) watch() {
 
 		atomic.AddInt64(&m.restartCount, 1)
 		backoff := m.backoff()
+		ctx := m.ctx
 		m.mu.Unlock()
 
 		m.buf.Infof(m.opts.LogSource, "%s reiniciando em %s", m.opts.Name, backoff)
 		select {
 		case <-time.After(backoff):
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			m.mu.Lock()
-			if m.stopRequested {
+			if m.watchGen == gen && m.stopRequested {
 				m.state = StateStopped
 			}
 			m.mu.Unlock()
@@ -189,6 +235,10 @@ func (m *Managed) watch() {
 		}
 
 		m.mu.Lock()
+		if m.watchGen != gen {
+			m.mu.Unlock()
+			return
+		}
 		if m.stopRequested {
 			m.state = StateStopped
 			m.mu.Unlock()
@@ -233,14 +283,16 @@ func (m *Managed) Stop() error {
 	m.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		killProcessGroup(cmd.Process.Pid)
+		signalProcess(cmd.Process)
 	}
 	if watchDone != nil {
 		select {
 		case <-watchDone:
 		case <-time.After(m.opts.StopTimeout):
 			if cmd != nil && cmd.Process != nil {
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				forceKillProcessGroup(cmd.Process.Pid)
+				_ = cmd.Process.Kill()
 			}
 			select {
 			case <-watchDone:
@@ -305,57 +357,7 @@ func cmdlineMatchesBinary(cmd, binary, binaryName string) bool {
 	return strings.Contains(cmd, "/"+binaryName+" ")
 }
 
-// KillExistingByBinary kills any process whose cmdline contains the given binary name
-// but is not a system binary (/usr/bin, /usr/local/bin). Used for cleanup of stale
-// child processes from previous agent runs.
-func KillExistingByBinary(buf *logx.Buffer, name, binary string) error {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return err
-	}
-	binaryName := filepath.Base(binary)
-	killed := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		if pid == os.Getpid() {
-			continue
-		}
-		cmdline, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
-		if err != nil {
-			continue
-		}
-		cmd := strings.ReplaceAll(string(cmdline), "\x00", " ")
-		if !cmdlineMatchesBinary(cmd, binary, binaryName) {
-			continue
-		}
-		// Avoid killing system-wide instances.
-		if strings.Contains(cmd, "/usr/bin/"+binaryName) || strings.Contains(cmd, "/usr/local/bin/"+binaryName) {
-			continue
-		}
-		if buf != nil {
-			buf.Warnf(name, "matando processo antigo %d: %s", pid, cmd)
-		}
-		if err := KillProcess(pid); err != nil {
-			if buf != nil {
-				buf.Warnf(name, "falha ao matar %d: %v", pid, err)
-			}
-		} else {
-			killed++
-		}
-	}
-	if killed > 0 {
-		time.Sleep(500 * time.Millisecond)
-	}
-	return nil
-}
-
-// KillProcess sends SIGINT and then SIGKILL to the given PID.
+// KillProcess sends Interrupt and then Kill to the given PID.
 func KillProcess(pid int) error {
 	p, err := os.FindProcess(pid)
 	if err != nil {

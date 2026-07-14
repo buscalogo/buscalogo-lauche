@@ -12,22 +12,32 @@ import (
 	"buscalogo-agent/internal/process"
 )
 
-// Service é o motor de scraping nativo (CouchDB por hostname + legado).
+// Service é o motor de scraping nativo (índice CouchDB ou SQLite).
 type Service struct {
 	cfg    *config.Config
 	buf    *logx.Buffer
 	cdb    *couchdb.Service
-	store  *Store
+	store  ScrapeStore
 	engine *Engine
 	mu     sync.Mutex
 }
 
 func New(cfg *config.Config, cdb *couchdb.Service, buf *logx.Buffer) *Service {
-	s := &Service{cfg: cfg, buf: buf, cdb: cdb}
-	if cdb != nil {
-		s.store = NewStore(cdb)
-	}
-	return s
+	return &Service{cfg: cfg, buf: buf, cdb: cdb}
+}
+
+// SetStore define o índice de scrape (Couch ou SQLite). Preferir um store partilhado com o P2P.
+func (s *Service) SetStore(store ScrapeStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store = store
+	s.engine = nil // recria com o store novo
+}
+
+func (s *Service) Store() ScrapeStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.store
 }
 
 func (s *Service) runtimeConfig() RuntimeConfig {
@@ -79,9 +89,12 @@ func (s *Service) ensureEngine() *Engine {
 }
 
 func (s *Service) Start() error {
+	if s.Store() == nil {
+		return ErrStoreUnavailable
+	}
 	eng := s.ensureEngine()
 	eng.Start()
-	s.buf.Infof("scraper", "motor de scraping iniciado (CouchDB: %s* + legado %s)", hostDBPrefix, scrapingDBLegacy)
+	s.buf.Infof("scraper", "motor de scraping iniciado")
 	if s.store != nil {
 		go s.store.WarmHostCounts()
 	}
@@ -136,17 +149,24 @@ func (s *Service) Info() map[string]any {
 	eng := s.engine
 	s.mu.Unlock()
 	info := map[string]any{
-		"backend":     "couchdb",
+		"backend":     "none",
 		"database":    hostDBPrefix + "<hostname>",
 		"legacy_db":   scrapingDBLegacy,
 		"host_prefix": hostDBPrefix,
 		"running":     false,
 	}
-	if s.cdb != nil {
+	if s.cdb != nil && s.cdb.Enabled() {
+		info["backend"] = "couchdb"
 		info["couchdb_url"] = s.cdb.BaseURL()
 	}
 	if s.store != nil {
-		info["storage"] = s.store.StorageStats()
+		stats := s.store.StorageStats()
+		info["storage"] = stats
+		if b, ok := stats["backend"].(string); ok && b != "" {
+			info["backend"] = b
+		} else if info["backend"] == "none" {
+			info["backend"] = "couchdb"
+		}
 	}
 	if eng != nil {
 		info["running"] = eng.Running()
@@ -239,28 +259,28 @@ func (s *Service) AddTask(url, priority string, depth, maxDepth, scheduleDays in
 
 func (s *Service) Lookup(rawURL string) (LookupResult, error) {
 	if s.store == nil {
-		return LookupResult{}, fmt.Errorf("CouchDB indisponível")
+		return LookupResult{}, ErrStoreUnavailable
 	}
 	return s.store.Lookup(rawURL)
 }
 
 func (s *Service) ListResults(limit int) ([]StoredDoc, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("CouchDB indisponível")
+		return nil, ErrStoreUnavailable
 	}
 	return s.store.ListResults(limit)
 }
 
 func (s *Service) DeleteResult(docID string) error {
 	if s.store == nil {
-		return fmt.Errorf("CouchDB indisponível")
+		return ErrStoreUnavailable
 	}
 	return s.store.Delete(docID)
 }
 
 func (s *Service) ListSites() ([]SiteSummary, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("CouchDB indisponível")
+		return nil, ErrStoreUnavailable
 	}
 	return s.store.ListSites()
 }
@@ -273,7 +293,7 @@ func (s *Service) DeleteSite(hostname string) (map[string]int, error) {
 		return nil, fmt.Errorf("hostname vazio")
 	}
 	if s.store == nil {
-		return nil, fmt.Errorf("CouchDB indisponível")
+		return nil, ErrStoreUnavailable
 	}
 	deleted, err := s.store.DeleteByHostname(hostname)
 	if err != nil {
@@ -293,7 +313,7 @@ func (s *Service) DeleteSite(hostname string) (map[string]int, error) {
 // DeleteLegacyScrapingDB remove o monólito buscalogo_scraping (libera disco).
 func (s *Service) DeleteLegacyScrapingDB() (map[string]any, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("CouchDB indisponível")
+		return nil, ErrStoreUnavailable
 	}
 	info, err := s.store.DeleteLegacyDB()
 	if err != nil {

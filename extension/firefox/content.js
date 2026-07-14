@@ -1,7 +1,11 @@
-if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThis.chrome = browser; }
 (function () {
+  // Evita listeners duplicados se o background reinjetar o script ao religar o alerta.
+  if (window.__buscalogoAgentChip) return;
+  window.__buscalogoAgentChip = true;
+
   const ID = "buscalogo-agent-chip";
   const PROXY_PATH = "/__buscalogo_agent__";
+  const DISMISS_KEY = "bl-chip-dismissed";
 
   function isBlHost() {
     return /\.bl$/i.test(location.hostname);
@@ -14,6 +18,26 @@ if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThi
 
   function proxyBase() {
     return "http://" + location.host + PROXY_PATH;
+  }
+
+  function dismissKey(url) {
+    return DISMISS_KEY + ":" + url;
+  }
+
+  function isDismissed(url) {
+    try {
+      return sessionStorage.getItem(dismissKey(url)) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function markDismissed(url) {
+    try {
+      sessionStorage.setItem(dismissKey(url), "1");
+    } catch {
+      // ignore
+    }
   }
 
   function ensureChip() {
@@ -31,7 +55,28 @@ if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThi
     if (el) el.style.display = "none";
   }
 
+  function attachDismiss(el, url) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "bl-dismiss";
+    close.setAttribute("aria-label", "Fechar alerta");
+    close.title = "Fechar sem sugerir";
+    close.textContent = "×";
+    close.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      markDismissed(url);
+      hideChip();
+    });
+    el.appendChild(close);
+  }
+
   function render(result, url) {
+    if (isDismissed(url)) {
+      hideChip();
+      return;
+    }
+
     const el = ensureChip();
     el.className = "";
     if (result.skipped) {
@@ -44,17 +89,20 @@ if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThi
       el.classList.add("bl-offline");
       el.innerHTML =
         '<span>Agente offline</span><a href="http://127.0.0.1:9970" target="_blank" rel="noopener">abrir</a>';
+      attachDismiss(el, url);
       return;
     }
     if (result.indexed) {
       el.classList.add("bl-ok");
       el.innerHTML = "<span>Indexada no BuscaLogo</span>";
+      attachDismiss(el, url);
       return;
     }
     el.classList.add("bl-suggest");
     el.innerHTML =
-      '<span>Sugerir ao BuscaLogo</span><button type="button">Adicionar</button>';
-    const btn = el.querySelector("button");
+      '<span>Sugerir ao BuscaLogo</span><button type="button" class="bl-add">Adicionar</button>';
+    attachDismiss(el, url);
+    const btn = el.querySelector("button.bl-add");
     btn.addEventListener("click", async (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -82,11 +130,13 @@ if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThi
         }
         el.className = "bl-ok";
         el.innerHTML = "<span>Enfileirada</span>";
+        attachDismiss(el, url);
       } catch (e) {
         btn.disabled = false;
         btn.textContent = "Adicionar";
         el.classList.add("bl-offline");
-        el.querySelector("span").textContent = e.message || "Erro";
+        const span = el.querySelector("span");
+        if (span) span.textContent = e.message || "Erro";
       }
     });
   }
@@ -160,6 +210,8 @@ if (typeof chrome === "undefined" && typeof browser !== "undefined") { globalThi
 
   (async () => {
     const url = location.href;
+    if (isDismissed(url)) return;
+
     let result;
     if (canUsePageProxy()) {
       result = await lookupViaProxy(url);

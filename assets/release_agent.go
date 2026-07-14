@@ -1,3 +1,5 @@
+//go:build !registry
+
 package assets
 
 import (
@@ -15,7 +17,7 @@ import (
 // HasRelease informa se um release embutido (diretório, ex: couchdb/) existe.
 func HasRelease(name string) bool {
 	root := filepath.ToSlash(filepath.Join(platformDir(), name))
-	entries, err := linuxFS.ReadDir(root)
+	entries, err := couchdbFS.ReadDir(root)
 	if err != nil || len(entries) == 0 {
 		return false
 	}
@@ -29,10 +31,9 @@ func HasRelease(name string) bool {
 }
 
 // EnsureRelease extrai um release embutido (diretório) para destDir/name.
-// Retorna o caminho raiz do release no disco.
 func EnsureRelease(name, destDir string) (string, error) {
 	embedRoot := filepath.ToSlash(filepath.Join(platformDir(), name))
-	if _, err := linuxFS.Open(embedRoot); err != nil {
+	if _, err := couchdbFS.Open(embedRoot); err != nil {
 		return "", fmt.Errorf("release %s não embutido: %w", name, err)
 	}
 
@@ -85,7 +86,7 @@ func releaseBinary(releaseRoot string) string {
 
 func releaseDigest(embedRoot string) (string, error) {
 	h := sha256.New()
-	err := fs.WalkDir(linuxFS, embedRoot, func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(couchdbFS, embedRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -100,7 +101,7 @@ func releaseDigest(embedRoot string) (string, error) {
 		rel = strings.TrimPrefix(rel, "/")
 		io.WriteString(h, rel)
 		io.WriteString(h, "\x00")
-		data, err := linuxFS.ReadFile(path)
+		data, err := couchdbFS.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -115,7 +116,7 @@ func releaseDigest(embedRoot string) (string, error) {
 }
 
 func extractTree(embedRoot, target string) error {
-	return fs.WalkDir(linuxFS, embedRoot, func(path string, d fs.DirEntry, err error) error {
+	return fs.WalkDir(couchdbFS, embedRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -131,7 +132,7 @@ func extractTree(embedRoot, target string) error {
 		if d.IsDir() {
 			return os.MkdirAll(out, 0o755)
 		}
-		data, err := linuxFS.ReadFile(path)
+		data, err := couchdbFS.ReadFile(path)
 		if err != nil {
 			return err
 		}

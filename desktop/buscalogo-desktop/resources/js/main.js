@@ -6,7 +6,11 @@ const PANEL_URL = "http://127.0.0.1:9970";
 const API_STATUS = `${PANEL_URL}/api/status`;
 const API_SHUTDOWN = `${PANEL_URL}/api/shutdown`;
 const DAEMON_NAME = "buscalogo-agentd";
+const WIN_SERVICE = "BuscaLogoAgent";
 const IS_WIN = typeof NL_OS !== "undefined" && NL_OS === "Windows";
+
+/** Em instalações MSI/Windows o daemon é o serviço — não spawn/kill local. */
+let useWindowsService = false;
 
 function isNeuDevRun() {
   return Boolean(globalThis.NL_GINJECTED || globalThis.NL_CINJECTED);
@@ -65,12 +69,62 @@ async function resolveDaemonBinary() {
 }
 
 function trayMenuItems() {
-  return [
+  const items = [
     { id: "PANEL", text: "Abrir painel" },
     { id: "BROWSER", text: "Abrir no navegador" },
     { id: "SEP", text: "-" },
-    { id: "QUIT", text: "Sair" },
   ];
+  if (IS_WIN && useWindowsService) {
+    items.push({ id: "START_SVC", text: "Iniciar serviço" });
+    items.push({ id: "SEP2", text: "-" });
+    items.push({ id: "QUIT", text: "Fechar janela" });
+  } else {
+    items.push({ id: "QUIT", text: "Sair" });
+  }
+  return items;
+}
+
+async function detectWindowsService() {
+  if (!IS_WIN) return false;
+  try {
+    const r = await Neutralino.os.execCommand(
+      `sc query ${WIN_SERVICE}`
+    );
+    const out = `${r.stdOut || ""}${r.stdErr || ""}`;
+    if (/SERVICE_NAME:\s*BuscaLogoAgent/i.test(out) || /BuscaLogoAgent/i.test(out)) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  // Heurística: binário ao lado em Program Files
+  try {
+    const p = `${NL_PATH}/${DAEMON_NAME}.exe`;
+    if (/Program Files/i.test(p) || /Program Files/i.test(NL_PATH || "")) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+async function startWindowsService() {
+  setStatus("Iniciando serviço Windows…");
+  try {
+    await Neutralino.os.execCommand(`sc start ${WIN_SERVICE}`);
+  } catch (e) {
+    // sc falha se já estiver running — ok
+    console.warn("sc start:", e);
+  }
+  const ok = await waitForAgent(60000);
+  if (!ok) {
+    showError(
+      `Serviço ${WIN_SERVICE} não respondeu em ${PANEL_URL}. Abra serviços.msc ou rode o instalador MSI como Administrador.`
+    );
+    return false;
+  }
+  return true;
 }
 
 async function trayLog(msg, level = "INFO") {
@@ -144,6 +198,10 @@ async function startAgent() {
     return true;
   }
 
+  if (useWindowsService) {
+    return startWindowsService();
+  }
+
   const binary = await resolveDaemonBinary();
   if (!binary) {
     showError(
@@ -154,8 +212,11 @@ async function startAgent() {
 
   setStatus("Iniciando serviços…");
   try {
-    const cwd = binary.includes("/") ? binary.replace(/[/\\][^/\\]+$/, "") : NL_PATH;
-    agentProc = await Neutralino.os.spawnProcess(`${binary} --no-tray`, { cwd });
+    const cwd = binary.includes("/") || binary.includes("\\")
+      ? binary.replace(/[/\\][^/\\]+$/, "")
+      : NL_PATH;
+    const cmd = IS_WIN ? `"${binary}" --no-tray` : `${binary} --no-tray`;
+    agentProc = await Neutralino.os.spawnProcess(cmd, { cwd });
     agentSpawned = true;
   } catch (e) {
     showError(`Falha ao iniciar: ${e.message || e}`);
@@ -190,6 +251,16 @@ async function boot() {
     boot();
   });
 
+  useWindowsService = await detectWindowsService();
+  if (useWindowsService) {
+    await trayLog("modo serviço Windows detectado");
+    try {
+      await Neutralino.os.setTray({ icon: TRAY_ICON, menuItems: trayMenuItems() });
+    } catch {
+      // tray já pode estar set
+    }
+  }
+
   const ok = await startAgent();
   if (ok) await openPanel();
 }
@@ -202,6 +273,12 @@ function withTimeout(promise, ms) {
 }
 
 async function stopDaemon() {
+  // Instalação MSI: fechar a UI não para o serviço Windows.
+  if (useWindowsService) {
+    await trayLog("quit UI — serviço Windows permanece");
+    return;
+  }
+
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 2500);
@@ -236,17 +313,23 @@ async function stopDaemon() {
   }
   for (const pid of pids) {
     try {
-      await Neutralino.os.execCommand(`kill -TERM ${pid} 2>/dev/null || true`);
+      if (IS_WIN) {
+        await Neutralino.os.execCommand(`taskkill /PID ${pid} /T /F`);
+      } else {
+        await Neutralino.os.execCommand(`kill -TERM ${pid} 2>/dev/null || true`);
+      }
     } catch {
       // ignore
     }
   }
-  try {
-    await Neutralino.os.execCommand(
-      "pkill -TERM -f 'buscalogo-agentd.*--no-tray' 2>/dev/null || true"
-    );
-  } catch {
-    // ignore
+  if (!IS_WIN) {
+    try {
+      await Neutralino.os.execCommand(
+        "pkill -TERM -f 'buscalogo-agentd.*--no-tray' 2>/dev/null || true"
+      );
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -281,6 +364,10 @@ async function onTrayMenuItemClicked(event) {
       break;
     case "BROWSER":
       await Neutralino.os.open(PANEL_URL);
+      break;
+    case "START_SVC":
+      await startAgent();
+      await openPanel();
       break;
     case "QUIT":
       await shutdown();

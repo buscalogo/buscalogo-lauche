@@ -628,10 +628,11 @@ func (st *Store) deleteHostnameFromLegacy(hostname string) (deleted int, err err
 }
 
 // DeleteLegacyDB remove o monólito buscalogo_scraping inteiro.
-func (st *Store) DeleteLegacyDB() (couchdb.DbInfo, error) {
+func (st *Store) DeleteLegacyDB() (LegacyPurgeInfo, error) {
 	info, _ := st.cdb.DbInfo(scrapingDBLegacy)
+	out := LegacyPurgeInfo{DocCount: info.DocCount, FileSize: info.FileSize}
 	if err := st.cdb.DeleteDB(scrapingDBLegacy); err != nil {
-		return info, err
+		return out, err
 	}
 	// Recria vazio para bootstrap/compat (PouchDB / defaults).
 	_ = st.cdb.EnsureDB(scrapingDBLegacy)
@@ -639,7 +640,7 @@ func (st *Store) DeleteLegacyDB() (couchdb.DbInfo, error) {
 	st.hostsWarm = false
 	st.hostCounts = map[string]int{}
 	st.hostMu.Unlock()
-	return info, nil
+	return out, nil
 }
 
 // StorageStats resume tamanho do índice (só DbInfo em cache — sem include_docs).

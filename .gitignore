@@ -19,11 +19,20 @@ assets/linux/coredns
 assets/linux/yggdrasil
 assets/linux/couchdb/
 !assets/linux/MANIFEST
+assets/windows/coredns.exe
+assets/windows/yggdrasil.exe
+assets/windows/wintun.dll
+!assets/windows/MANIFEST
+!assets/windows/.gitkeep
 
 # --- Pacotes de distribuição (make dist / make deb) ---
 dist/buscalogo-agent/
+dist/buscalogo-agent-win/
+dist/msi-stage/
 dist/deb/
 dist/*.deb
+dist/*.msi
+dist/*.zip
 dist/*.deb.old
 dist/*.old
 dist/*.tar.gz

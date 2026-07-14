@@ -119,17 +119,20 @@ func calculateRelevance(doc StoredDoc, terms []string) relevanceScore {
 }
 
 func (st *Store) Search(query, queryID, peerID string, limit int) ([]SearchHit, error) {
+	docs, err := st.ListResultsFull(100)
+	if err != nil {
+		return nil, err
+	}
+	return rankSearchDocs(docs, query, queryID, peerID, limit), nil
+}
+
+func rankSearchDocs(docs []StoredDoc, query, queryID, peerID string, limit int) []SearchHit {
 	if limit <= 0 {
 		limit = 50
 	}
 	terms := prepareSearchTerms(query)
 	if len(terms) == 0 {
-		return nil, nil
-	}
-
-	docs, err := st.ListResultsFull(100)
-	if err != nil {
-		return nil, err
+		return nil
 	}
 
 	hits := make([]SearchHit, 0)
@@ -205,5 +208,5 @@ func (st *Store) Search(query, queryID, peerID string, limit int) ([]SearchHit, 
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
-	return hits, nil
+	return hits
 }

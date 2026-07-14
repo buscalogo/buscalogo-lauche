@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ type Buffer struct {
 	cap     int
 	next    int64
 	subs    map[chan Entry]struct{}
+	echo    bool // também imprime em stdout (útil no PM2)
 }
 
 func NewBuffer(cap int) *Buffer {
@@ -38,6 +40,13 @@ func NewBuffer(cap int) *Buffer {
 	}
 }
 
+// SetEcho espelha cada linha no log padrão (PM2 / journald).
+func (b *Buffer) SetEcho(v bool) {
+	b.mu.Lock()
+	b.echo = v
+	b.mu.Unlock()
+}
+
 func (b *Buffer) Append(source, level, msg string) Entry {
 	e := Entry{
 		ID:      atomic.AddInt64(&b.next, 1),
@@ -48,6 +57,7 @@ func (b *Buffer) Append(source, level, msg string) Entry {
 	}
 
 	b.mu.Lock()
+	echo := b.echo
 	if len(b.entries) >= b.cap {
 		b.entries = b.entries[1:]
 	}
@@ -57,6 +67,10 @@ func (b *Buffer) Append(source, level, msg string) Entry {
 		subs = append(subs, ch)
 	}
 	b.mu.Unlock()
+
+	if echo {
+		log.Printf("[%s] %s %s", e.Source, e.Level, e.Message)
+	}
 
 	for _, ch := range subs {
 		select {

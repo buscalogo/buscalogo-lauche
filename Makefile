@@ -5,6 +5,19 @@ VERSION  ?= $(shell tr -d ' \n' < VERSION 2>/dev/null || echo 0.1.0)
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS  := -X buscalogo-agent/internal/version.Version=$(VERSION) -X buscalogo-agent/internal/version.Commit=$(COMMIT)
 
+# IPv6 Ygg do registry público (opcional).
+# Override: make REGISTRY_YGG_IP=205:... build
+# Ou grave uma linha em ../registy/ygg.ip
+REGISTRY_DIR ?= ../registy
+REGISTRY_YGG_IP ?= $(shell \
+  if [ -f "$(REGISTRY_DIR)/ygg.ip" ]; then head -1 "$(REGISTRY_DIR)/ygg.ip" | tr -d '[] \n'; \
+  elif [ -f "$(REGISTRY_DIR)/data/data/registry-bootstrap.txt" ]; then grep -E '^YGG_IP=' "$(REGISTRY_DIR)/data/data/registry-bootstrap.txt" | head -1 | cut -d= -f2- | tr -d '[] \n'; \
+  elif [ -f "$(REGISTRY_DIR)/data/registry-bootstrap.txt" ]; then grep -E '^YGG_IP=' "$(REGISTRY_DIR)/data/registry-bootstrap.txt" | head -1 | cut -d= -f2- | tr -d '[] \n'; \
+  else echo ""; fi)
+ifneq ($(strip $(REGISTRY_YGG_IP)),)
+LDFLAGS  += -X buscalogo-agent/internal/config.DefaultRegistryYggIP=$(REGISTRY_YGG_IP)
+endif
+
 YGG_VERSION := 0.5.14
 DNS_VERSION := 1.14.4
 COUCH_VERSION := 3.5.2
@@ -15,12 +28,28 @@ COUCH_DEB_URL := https://apache.jfrog.io/artifactory/couchdb-deb/pool/C/CouchDB/
 
 ASSETS_DIR := assets/linux
 
-.PHONY: all build assets assets-couchdb run test vet fmt clean tidy dist deb release desktop desktop-icons desktop-neutralino desktop-run desktop-build
+.PHONY: all build build-windows build-agent-registry assets assets-couchdb run test vet fmt clean tidy dist deb release desktop desktop-icons desktop-neutralino desktop-run desktop-build desktop-build-windows msi-stage msi
 
 all: build
 
 build:
+	@if [ -n "$(REGISTRY_YGG_IP)" ]; then echo ">> registry seed: $(REGISTRY_YGG_IP)"; else echo ">> registry seed: (nenhum — use ../registy/ygg.ip)"; fi
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(APP) ./cmd/agent
+
+# Cross-compile Windows amd64 (não embute CouchDB). Baixa assets/windows se faltarem.
+build-windows:
+	@mkdir -p dist assets/windows
+	@if [ ! -s assets/windows/coredns.exe ] || [ ! -s assets/windows/yggdrasil.exe ] || [ ! -s assets/windows/wintun.dll ]; then \
+		echo ">> assets/windows incompletos — rodando scripts/fetch-windows-assets.sh"; \
+		chmod +x scripts/fetch-windows-assets.sh; \
+		./scripts/fetch-windows-assets.sh; \
+	fi
+	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/$(APP).exe ./cmd/agent
+	@echo ">> Windows: dist/$(APP).exe"
+
+# Atalho: Agent + seed do registry (via registy/scripts)
+build-agent-registry:
+	@$(REGISTRY_DIR)/scripts/build-agent.sh
 
 run: build
 	./$(APP)
@@ -170,8 +199,12 @@ desktop-icons:
 # neutralino.js não vai ao git (.gitignore) — neu update baixa client + binários.
 desktop-neutralino:
 	@command -v neu >/dev/null || { echo ">> Erro: neu CLI não encontrado (npm i -g @neutralinojs/neu)"; exit 1; }
-	@echo ">> Neutralino client e binários (neu update)"
-	@cd $(DESKTOP_DIR) && neu update
+	@if [ -f $(DESKTOP_DIR)/resources/js/neutralino.js ] && [ -f $(DESKTOP_DIR)/bin/neutralino-linux_x64 ]; then \
+		echo ">> Neutralino já presente (skip neu update)"; \
+	else \
+		echo ">> Neutralino client e binários (neu update)"; \
+		cd $(DESKTOP_DIR) && neu update; \
+	fi
 
 # App desktop Neutralinojs (requer `neu` global: npm i -g @neutralinojs/neu)
 desktop-run: build desktop-icons desktop-neutralino
@@ -184,3 +217,37 @@ desktop-build: build desktop-icons desktop-neutralino
 	@cp -f $(APP) $(DESKTOP_DIR)/dist/buscalogo-agent/
 	@cp -f $(DESKTOP_DIR)/resources/icons/systrayIcon.png $(DESKTOP_DIR)/dist/buscalogo-agent/trayIcon.png
 	@echo ">> Desktop: $(DESKTOP_DIR)/dist/buscalogo-agent/"
+
+# Pacote Neutralino + Agent Windows (cross-compile Linux → win_x64).
+# Requer neu (npm i -g @neutralinojs/neu) e assets/windows (make build-windows).
+desktop-build-windows: build-windows desktop-icons desktop-neutralino
+	@cp -f dist/$(APP).exe $(DESKTOP_DIR)/$(DAEMON_BIN).exe
+	@cd $(DESKTOP_DIR) && neu build --release
+	@mkdir -p dist/buscalogo-agent-win
+	@cp -f $(DESKTOP_DIR)/dist/buscalogo-agent/buscalogo-agent-win_x64.exe dist/buscalogo-agent-win/buscalogo-agent.exe
+	@cp -f $(DESKTOP_DIR)/dist/buscalogo-agent/resources.neu dist/buscalogo-agent-win/
+	@cp -f dist/$(APP).exe dist/buscalogo-agent-win/$(DAEMON_BIN).exe
+	@cp -f $(DESKTOP_DIR)/resources/icons/systrayIcon.png dist/buscalogo-agent-win/trayIcon.png
+	@cp -f assets/windows/wintun.dll dist/buscalogo-agent-win/wintun.dll 2>/dev/null || true
+	@cd dist && zip -qr buscalogo-agent-win-amd64.zip buscalogo-agent-win
+	@echo ">> Desktop Windows: dist/buscalogo-agent-win/ e dist/buscalogo-agent-win-amd64.zip"
+	@echo ">> No PC: rode buscalogo-agent.exe (Neutralino) como Admin na 1ª vez"
+
+# Staging para MSI (WiX). O .msi em si só é gerado no Windows: packaging/windows/build.ps1
+msi-stage: desktop-build-windows
+	@rm -rf dist/msi-stage
+	@mkdir -p dist/msi-stage
+	@cp -f dist/buscalogo-agent-win/buscalogo-agentd.exe dist/msi-stage/
+	@cp -f dist/buscalogo-agent-win/buscalogo-agent.exe dist/msi-stage/
+	@cp -f dist/buscalogo-agent-win/resources.neu dist/msi-stage/
+	@cp -f dist/buscalogo-agent-win/trayIcon.png dist/msi-stage/
+	@cp -f dist/buscalogo-agent-win/wintun.dll dist/msi-stage/
+	@echo ">> MSI stage: dist/msi-stage/"
+	@echo ">> No Windows: .\\packaging\\windows\\build.ps1"
+
+msi:
+	@echo "O MSI é gerado no Windows com WiX Toolset v4/v5."
+	@echo "  1) make msi-stage"
+	@echo "  2) copie dist/msi-stage + packaging/windows para o PC Windows"
+	@echo "  3) .\\packaging\\windows\\build.ps1"
+	@echo "Ver packaging/windows/README.md"

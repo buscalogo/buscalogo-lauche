@@ -1,0 +1,5 @@
+# Binários bundled do BuscaLogo Agent (Windows amd64).
+# Populado por: scripts/fetch-windows-assets.sh
+YGG_VERSION=0.5.14
+DNS_VERSION=1.14.4
+WINTUN_VERSION=0.14.1

@@ -33,6 +33,7 @@ type Manager struct {
 	cfg          *config.Config
 	buf          *logx.Buffer
 	srv          *http.Server
+	srvTLS       *http.Server
 	mu           sync.RWMutex
 	sites        []Site
 	proxies      map[string]*httputil.ReverseProxy
@@ -40,6 +41,10 @@ type Manager struct {
 	portFallback bool
 	webRunning   bool
 	webError     string
+	tlsPort      int
+	tlsRunning   bool
+	tlsError     string
+	tlsMode      string
 }
 
 func New(cfg *config.Config, buf *logx.Buffer) *Manager {
@@ -410,6 +415,7 @@ func (m *Manager) Start() error {
 	m.webError = ""
 
 	go m.runWebServer(port)
+	go m.startTLS()
 	return nil
 }
 
@@ -504,18 +510,29 @@ func (m *Manager) WebStatus() (running bool, actualPort int, fallback bool, errM
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	srv := m.srv
+	srvTLS := m.srvTLS
 	m.mu.Unlock()
-	if srv == nil {
-		return nil
-	}
+
+	var first error
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := srv.Shutdown(ctx)
+	if srv != nil {
+		if err := srv.Shutdown(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	if srvTLS != nil {
+		if err := srvTLS.Shutdown(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
 	m.mu.Lock()
 	m.srv = nil
+	m.srvTLS = nil
 	m.webRunning = false
+	m.tlsRunning = false
 	m.mu.Unlock()
-	return err
+	return first
 }
 
 // ActualPort retorna a porta efetiva do servidor web (pode ser fallback 8080).

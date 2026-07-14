@@ -35,7 +35,11 @@ async function getSettings() {
 
 async function setPageAlertEnabled(enabled) {
   await chrome.storage.local.set({ pageAlertEnabled: !!enabled });
-  return syncPageAlert(!!enabled);
+  const result = await syncPageAlert(!!enabled);
+  if (!result.ok && enabled) {
+    await chrome.storage.local.set({ pageAlertEnabled: false });
+  }
+  return result;
 }
 
 async function hasOrigins(origins) {
@@ -70,7 +74,55 @@ async function hasPageOrigins() {
 }
 
 async function requestPageOrigins() {
+  // Preferir pedir no popup (gesto do usuário). No background o navegador costuma negar.
   return requestOrigins(PAGE_ORIGINS);
+}
+
+async function hideAlertOnAllTabs() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id == null) return;
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: "BL_HIDE_ALERT" });
+      } catch {
+        // sem content script
+      }
+    })
+  );
+}
+
+async function injectAlertIntoOpenTabs() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  for (const tab of tabs) {
+    if (tab.id == null || !tab.url || !isHttpUrl(tab.url)) continue;
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId: tab.id },
+        files: ["content.css"],
+      });
+    } catch {
+      // ignore
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+    } catch {
+      // about:, moz-extension:, etc.
+    }
+  }
 }
 
 async function registerAlertScripts() {
@@ -106,6 +158,7 @@ async function unregisterAlertScripts() {
 async function syncPageAlert(enabled) {
   if (!enabled) {
     await unregisterAlertScripts();
+    await hideAlertOnAllTabs();
     return { ok: true, enabled: false, permission: await hasPageOrigins() };
   }
   const permitted = await hasPageOrigins();
@@ -113,18 +166,19 @@ async function syncPageAlert(enabled) {
     await unregisterAlertScripts();
     return {
       ok: false,
-      enabled: true,
+      enabled: false,
       permission: false,
       message: "Permissão de páginas necessária para o alerta.",
     };
   }
   try {
     await registerAlertScripts();
+    await injectAlertIntoOpenTabs();
     return { ok: true, enabled: true, permission: true };
   } catch (e) {
     return {
       ok: false,
-      enabled: true,
+      enabled: false,
       permission: true,
       message: String(e.message || e),
     };
@@ -418,18 +472,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg?.type === "BL_SET_PAGE_ALERT") {
       const want = !!msg.enabled;
-      if (want) {
-        const permitted = (await hasPageOrigins()) || (await requestPageOrigins());
-        if (!permitted) {
-          await chrome.storage.local.set({ pageAlertEnabled: false });
-          sendResponse({
-            ok: false,
-            enabled: false,
-            permission: false,
-            message: "Permissão negada pelo navegador.",
-          });
-          return;
-        }
+      // Permissão http(s)://*/* deve ter sido pedida no popup (gesto do usuário).
+      if (want && !(await hasPageOrigins())) {
+        await chrome.storage.local.set({ pageAlertEnabled: false });
+        sendResponse({
+          ok: false,
+          enabled: false,
+          permission: false,
+          message: "Permissão de páginas necessária. Ative o interruptor e confirme no diálogo do navegador.",
+        });
+        return;
       }
       sendResponse(await setPageAlertEnabled(want));
       return;

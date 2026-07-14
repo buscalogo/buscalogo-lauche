@@ -29,10 +29,15 @@ cd desktop/buscalogo-desktop && neu run
 ## Build de produção
 
 ```bash
+# Linux
 make desktop-build
+
+# Windows (cross-compile a partir do Linux; gera zip em dist/)
+make desktop-build-windows
 ```
 
-Gera `desktop/buscalogo-desktop/dist/` com `buscalogo-desktop` + `buscalogo-agent` empacotados.
+- Linux: `desktop/buscalogo-desktop/dist/buscalogo-agent/`
+- Windows: `dist/buscalogo-agent-win/` e `dist/buscalogo-agent-win-amd64.zip`
 
 ## Arquitetura
 

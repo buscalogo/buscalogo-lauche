@@ -29,7 +29,7 @@ const (
 
 type Connector struct {
 	cfg    *config.Config
-	store  *scraper.Store
+	store  scraper.ScrapeStore
 	buf    *logx.Buffer
 	peerID string
 
@@ -85,7 +85,7 @@ type inboundMsg struct {
 	Message   string `json:"message"`
 }
 
-func New(cfg *config.Config, store *scraper.Store, buf *logx.Buffer) *Connector {
+func New(cfg *config.Config, store scraper.ScrapeStore, buf *logx.Buffer) *Connector {
 	return &Connector{
 		cfg:         cfg,
 		store:       store,
@@ -103,7 +103,7 @@ func newPeerID() string {
 
 func (c *Connector) Start() error {
 	if c.store == nil {
-		err := "CouchDB/scraper indisponível — o P2P precisa do índice de scraping"
+		err := "índice de scraping indisponível — o P2P precisa do store (CouchDB/SQLite)"
 		c.mu.Lock()
 		c.startError = err
 		c.running = false

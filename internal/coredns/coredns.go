@@ -83,18 +83,61 @@ func (s *Service) WriteCorefile() (string, error) {
 		}
 	}
 
-	corefile := renderCorefile(addr, cacheDir, upstreams, s.cfg.Yggdrasil.DnsServers, s.cfg.Yggdrasil.Enabled, s.cfg.DNS.SearchDomains, s.hostsFile(), s.cfg.DNS.ExternalListen)
+	// CoreDNS só permite um plugin hosts por server block — mescla sites + registry.
+	hostsPath, err := MergeHostsFiles()
+	if err != nil {
+		return "", err
+	}
+
+	// Modo B (system): sempre 127.0.0.1:53 — systemd-resolved encaminha ~bl.
+	// bind :: / 0.0.0.0:53 conflita com stub/libvirt e derruba o CoreDNS.
+	extListen := s.cfg.DNS.ExternalListen && s.cfg.DNS.Mode != "system"
+
+	corefile := renderCorefile(addr, cacheDir, upstreams, s.cfg.Yggdrasil.DnsServers, s.cfg.Yggdrasil.Enabled, s.cfg.DNS.SearchDomains, hostsPath, extListen)
 	if err := os.WriteFile(path, []byte(corefile), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func (s *Service) hostsFile() string {
-	if f, err := paths.SitesHostsFile(); err == nil {
-		return f
+// MergeHostsFiles combina sites.hosts + registry/hosts em data/bl.hosts.
+func MergeHostsFiles() (string, error) {
+	data, err := paths.Data()
+	if err != nil {
+		return "", err
 	}
-	return "/etc/hosts"
+	out := filepath.Join(data, "bl.hosts")
+	var b strings.Builder
+	b.WriteString("# BuscaLogo merged hosts (sites + registry) — gerado automaticamente\n")
+
+	appendFile := func(path, label string) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(&b, "# --- %s ---\n", label)
+		b.Write(raw)
+		if len(raw) > 0 && raw[len(raw)-1] != '\n' {
+			b.WriteByte('\n')
+		}
+	}
+
+	if sitesPath, err := paths.SitesHostsFile(); err == nil {
+		appendFile(sitesPath, "sites")
+	}
+	regPath := filepath.Join(data, "registry", "hosts")
+	appendFile(regPath, "registry")
+
+	if err := os.WriteFile(out, []byte(b.String()), 0o644); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// RefreshMergedHosts atualiza bl.hosts sem reescrever o Corefile.
+func (s *Service) RefreshMergedHosts() error {
+	_, err := MergeHostsFiles()
+	return err
 }
 
 func renderCorefile(addr, cacheDir string, upstreams, yggdns []string, yggEnabled bool, blTLDs []string, hostsFile string, externalListen bool) string {
@@ -120,7 +163,7 @@ func renderCorefile(addr, cacheDir string, upstreams, yggdns []string, yggEnable
 	fmt.Fprintf(&b, "        lameduck 5s\n")
 	fmt.Fprintf(&b, "    }\n")
 	fmt.Fprintf(&b, "    ready :5336\n")
-	fmt.Fprintf(&b, "    # Hosts de sites .bl hospedados neste agente\n")
+	fmt.Fprintf(&b, "    # sites.hosts + registry/hosts mesclados (hosts só 1x por bloco)\n")
 	fmt.Fprintf(&b, "    hosts %s {\n", hostsFile)
 	fmt.Fprintf(&b, "        fallthrough\n")
 	fmt.Fprintf(&b, "    }\n")
@@ -128,7 +171,6 @@ func renderCorefile(addr, cacheDir string, upstreams, yggdns []string, yggEnable
 	fmt.Fprintf(&b, "        success %d 5\n", 4096)
 	fmt.Fprintf(&b, "        denial 1024 5\n")
 	fmt.Fprintf(&b, "    }\n")
-	// Forward para .ygg via resolvedores Yggdrasil
 	if yggEnabled && len(yggdns) > 0 {
 		fmt.Fprintf(&b, "    # Yggdrasil DNS — Alfis, Meshname, etc\n")
 		fmt.Fprintf(&b, "    forward ygg %s {\n", strings.Join(yggdns, " "))

@@ -21,6 +21,7 @@ const logLines = [];
 let logFilter = "";
 let currentConfig = null;
 let currentWebPort = 80;
+let currentTLSPort = 0;
 let currentDNSMode = "local";
 let yggAddr = "";
 let configDirty = false;
@@ -122,16 +123,29 @@ async function fetchStatus() {
     $("#dns-badge").textContent = "DNS: " + (currentDNSMode === "system" ? "sistema :53" : "local :5333");
     updateCard("coredns", d.services.coredns);
     updateCard("yggdrasil", d.services.yggdrasil);
-    updateCard("couchdb", d.services.couchdb);
     if (d.services.scraper) updateCard("scraper", d.services.scraper);
+
+    const sys = d.system;
+    const isWin = (sys.platform || "").toLowerCase() === "windows";
+    const couchCard = $("#card-couchdb");
+    const sqliteCard = $("#card-sqlite");
+    if (isWin) {
+      if (couchCard) couchCard.style.display = "none";
+      if (sqliteCard) sqliteCard.style.display = "";
+      updateCard("couchdb", { state: "disabled" });
+    } else {
+      if (couchCard) couchCard.style.display = "";
+      if (sqliteCard) sqliteCard.style.display = "none";
+      updateCard("couchdb", d.services.couchdb);
+    }
 
     const now = Date.now();
     if (now - lastSideInfoAt > 45000) {
       lastSideInfoAt = now;
       refreshYggdrasilInfo();
-      refreshCouchInfo();
+      if (isWin) refreshSqliteInfo();
+      else refreshCouchInfo();
     }
-    const sys = d.system;
     $("#sys-mode-badge").textContent = d.dns_mode === "system" ? "Modo B" : "Modo A";
     $("#dns-mode-badge").textContent = d.dns_mode === "system" ? "Sistema (:53)" : "Local (:5333)";
 
@@ -146,36 +160,54 @@ async function fetchStatus() {
     if (d.web) {
       const w = d.web;
       currentWebPort = w.running ? (w.actual_port || w.port || 80) : (w.actual_port || w.port || 80);
+      currentTLSPort = w.tls_running ? (w.tls_port || 443) : 0;
       const wBadge = $("#web-port-badge");
       const wBadge2 = $("#web-port-badge-2");
       const whint = $("#web-hint");
+      const tlsHint = $("#web-tls-hint");
       const actual = w.actual_port || w.port || 80;
-      [wBadge, wBadge2].forEach(el => { if (el) el.textContent = w.running ? `:${actual}` : "off"; });
+      const tlsPart = w.tls_running ? `+:${w.tls_port || 443}` : "";
+      [wBadge, wBadge2].forEach(el => { if (el) el.textContent = w.running ? `:${actual}${tlsPart}` : "off"; });
       if (!w.running) {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge warn"; } });
-        whint.innerHTML = `<b>Servidor web parado.</b> ${escapeHtml(w.error || "Porta 80 indisponível.")} Use <b>Reiniciar web</b> ou libere a porta 80 (Apache/Nginx).`;
+        whint.innerHTML = `<b>Servidor web parado.</b> ${escapeHtml(w.error || "Porta 80 indisponível.")} Use <b>Reiniciar web</b> ou «Ativar portas 80/443».`;
         whint.style.color = "var(--red)";
       } else if (actual === 80 && !w.fallback) {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge ok"; } });
-        whint.textContent = "Servindo .bl na porta 80 (acesse http://<host>.bl).";
+        whint.textContent = "HTTP :80 ativo — http://<host>.bl";
         whint.style.color = "";
       } else if (w.fallback) {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge warn"; } });
-        whint.innerHTML = `Porta 80 indisponível. Rodando na porta <b>${actual}</b>. Use <code>http://&lt;host&gt;.bl:${actual}</code> no navegador.`;
+        whint.innerHTML = `Porta 80 indisponível. HTTP na <b>${actual}</b>. Use <code>http://&lt;host&gt;.bl:${actual}</code>.`;
         whint.style.color = "var(--amber)";
       } else {
         [wBadge, wBadge2].forEach(el => { if (el) { el.className = "badge"; } });
-        whint.textContent = `Servindo .bl na porta ${actual}.`;
+        whint.textContent = `HTTP na porta ${actual}.`;
         whint.style.color = "";
+      }
+      if (tlsHint) {
+        if (w.tls_running) {
+          const mode = w.tls_mode || "self_signed";
+          tlsHint.style.color = "";
+          tlsHint.innerHTML = mode === "self_signed"
+            ? `HTTPS :${w.tls_port || 443} ativo (certificado <b>self-signed</b> — navegador avisa até a CA BuscaLogo). <code>https://&lt;host&gt;.bl</code>`
+            : `HTTPS :${w.tls_port || 443} ativo (mode=${escapeHtml(mode)}).`;
+        } else if (w.tls_error) {
+          tlsHint.style.color = "var(--amber)";
+          tlsHint.textContent = `HTTPS indisponível: ${w.tls_error}`;
+        } else {
+          tlsHint.textContent = "";
+        }
       }
       const btn = $("#web-enable-80");
       const restartBtn = $("#web-restart");
-      if (w.running && actual === 80 && !w.fallback) {
-        btn.textContent = "Porta 80 ativa";
+      const privOK = w.running && actual === 80 && !w.fallback && w.tls_running && (w.tls_port === 443);
+      if (privOK) {
+        btn.textContent = "Portas 80/443 ativas";
         btn.disabled = true;
         btn.classList.add("ok");
       } else {
-        btn.textContent = "Ativar porta 80";
+        btn.textContent = "Ativar portas 80/443";
         btn.disabled = false;
         btn.classList.remove("ok");
       }
@@ -190,6 +222,7 @@ async function fetchStatus() {
     $("#autostart-enable").style.display = autoStartEnabled ? "none" : "inline-block";
     $("#autostart-disable").style.display = autoStartEnabled ? "inline-block" : "none";
     $("#autostart-status").textContent = autoStartEnabled ? "Status: ativo" : "Status: inativo";
+    if (d.network) renderNetworkPorts(d.network);
   } catch (e) {
     $("#api-badge").textContent = "offline";
     $("#api-badge").className = "badge warn";
@@ -197,6 +230,75 @@ async function fetchStatus() {
     $("#api-badge-2").className = "badge warn";
   } finally {
     statusBusy = false;
+  }
+}
+
+function portStatusLabel(st) {
+  switch (st) {
+    case "ok": return "OK";
+    case "firewall": return "Firewall?";
+    case "localhost_only": return "Só local";
+    case "not_listening": return "Fechada";
+    case "unknown": return "—";
+    default: return st || "—";
+  }
+}
+
+function renderNetworkPorts(net) {
+  const badge = $("#ports-badge");
+  const list = $("#ports-list");
+  const tip = $("#ports-firewall-tip");
+  const hint = $("#ports-hint");
+  if (!badge || !list) return;
+  if (!net || !Array.isArray(net.ports)) {
+    badge.textContent = "—";
+    badge.className = "badge";
+    return;
+  }
+  if (hint && /Windows/i.test(navigator.userAgent || "")) {
+    hint.textContent = "Verifica gossip (4401), discover (4402), HTTP (:80) e HTTPS (:443) pelo IPv6 Ygg. Sem 443/80 abertos, o site .bl não abre de outros peers. No Windows, liberte as portas no Firewall (adaptador Yggdrasil).";
+  }
+  if (net.all_ok) {
+    badge.textContent = "abertas";
+    badge.className = "badge ok";
+  } else {
+    badge.textContent = (net.blocked && net.blocked.length) ? `${net.blocked.length} bloqueada(s)` : "atenção";
+    badge.className = "badge warn";
+  }
+  list.innerHTML = net.ports.map(p => {
+    const cls = p.ok ? "ok" : (p.status === "firewall" || p.status === "localhost_only" ? "warn" : "bad");
+    let ygg = "";
+    if (p.reachable_via_ygg) ygg = " · Ygg OK";
+    else if (p.status === "firewall") ygg = " · Ygg falhou";
+    return `<div class="port-row ${cls}">
+      <div class="port-main"><b>:${p.port}/${p.proto}</b> ${escapeHtml(p.name)}
+        <span class="badge ${p.ok ? "ok" : "warn"}">${portStatusLabel(p.status)}${ygg}</span>
+      </div>
+      <div class="port-sub muted">${escapeHtml(p.purpose)}</div>
+      ${p.hint ? `<div class="port-hint">${escapeHtml(p.hint)}</div>` : ""}
+    </div>`;
+  }).join("");
+  if (tip) {
+    if (net.firewall_tip && !net.all_ok) {
+      tip.style.display = "block";
+      tip.textContent = net.firewall_tip;
+    } else {
+      tip.style.display = "none";
+      tip.textContent = "";
+    }
+  }
+}
+
+async function refreshNetworkPorts() {
+  const btn = $("#ports-refresh");
+  if (btn) { btn.disabled = true; btn.textContent = "Verificando…"; }
+  try {
+    const r = await fetch("/api/network/ports");
+    const d = await r.json();
+    if (d.network) renderNetworkPorts(d.network);
+  } catch (_) { /* ignore */ }
+  finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Verificar de novo"; }
   }
 }
 
@@ -235,13 +337,23 @@ async function fetchDNSStatus() {
 
     // System info
     const sys = d.system || {};
+    const win = (sys.platform || "").toLowerCase() === "windows";
     $("#dns-sys-port53").innerHTML = sys.port_53_loopback_free
       ? '<span style="color:var(--green)">livre \u2713</span>'
       : '<span style="color:var(--red)">ocupado</span>';
-    $("#dns-sys-resolved").textContent = sys.has_systemd_resolved ? (sys.resolved_stub_active ? "stub ativo" : "ativo (foreign)") : "n\u00e3o";
-    $("#dns-sys-resolv").textContent = sys.resolv_conf_mode || "\u2014";
-    $("#dns-sys-nm").textContent = sys.has_network_manager ? "sim" : "n\u00e3o";
-    $("#dns-sys-setcap").innerHTML = sys.setcap_available ? '<span style="color:var(--green)">dispon\u00edvel</span>' : '<span style="color:var(--red)">indispon\u00edvel</span>';
+    if (win) {
+      $("#dns-sys-resolved").textContent = "NRPT";
+      $("#dns-sys-resolv").textContent = sys.nrpt_configured ? "regras .bl ok" : "sem regras";
+      $("#dns-sys-nm").textContent = "n/a";
+      $("#dns-sys-setcap").innerHTML = sys.admin_available
+        ? '<span style="color:var(--green)">Admin</span>'
+        : '<span style="color:var(--red)">sem Admin</span>';
+    } else {
+      $("#dns-sys-resolved").textContent = sys.has_systemd_resolved ? (sys.resolved_stub_active ? "stub ativo" : "ativo (foreign)") : "n\u00e3o";
+      $("#dns-sys-resolv").textContent = sys.resolv_conf_mode || "\u2014";
+      $("#dns-sys-nm").textContent = sys.has_network_manager ? "sim" : "n\u00e3o";
+      $("#dns-sys-setcap").innerHTML = sys.setcap_available ? '<span style="color:var(--green)">dispon\u00edvel</span>' : '<span style="color:var(--red)">indispon\u00edvel</span>';
+    }
     $("#dns-sys-uses").innerHTML = sys.uses_buscalogo_dns ? '<span style="color:var(--green)">sim</span>' : "n\u00e3o";
 
     // Corefile
@@ -250,9 +362,13 @@ async function fetchDNSStatus() {
     // Hint
     const hint = $("#dns-hint");
     if (d.dns_mode === "local") {
-      hint.textContent = "Modo A: coredns em 127.0.0.1:5333 (sem root). Ative o Modo B para resolver .bl em todo o sistema via :53.";
+      hint.textContent = win
+        ? "Modo A: CoreDNS em 127.0.0.1:5333. Ative o Modo B (como Administrador) para o Windows resolver *.bl via NRPT + :53."
+        : "Modo A: coredns em 127.0.0.1:5333 (sem root). Ative o Modo B para resolver .bl em todo o sistema via :53.";
     } else {
-      hint.textContent = "Modo B ativo: coredns em 127.0.0.1:53 + resolvedor integrado. Revers\u00edvel a qualquer momento.";
+      hint.textContent = win
+        ? "Modo B ativo: CoreDNS em 127.0.0.1:53 + NRPT (.bl \u2192 127.0.0.1). Teste: nslookup algo.bl 127.0.0.1"
+        : "Modo B ativo: coredns em 127.0.0.1:53 + resolvedor integrado. Revers\u00edvel a qualquer momento.";
     }
     $("#dns-enable").disabled = d.dns_mode === "system";
     $("#dns-disable").disabled = d.dns_mode !== "system";
@@ -492,7 +608,9 @@ async function refreshScraperInfo() {
     const dbEl = $("#scraper-couch-mode");
     if (dbEl) {
       const st = info.storage || {};
-      if (st.file_size != null) {
+      if ((info.backend || st.backend) === "sqlite") {
+        dbEl.textContent = st.path ? `SQLite · ${st.path}` : "SQLite";
+      } else if (st.file_size != null) {
         dbEl.textContent = `${info.host_prefix || "bl_scraping_"}*`;
       } else {
         dbEl.textContent = info.database ? `CouchDB / ${info.database}` : "CouchDB";
@@ -842,6 +960,18 @@ async function refreshAccountInfo() {
   }
 }
 
+async function bootAccountGate() {
+  let d = await refreshAccountInfo();
+  // Restart: CouchDB/sessão podem demorar — retenta enquanto gate pede login.
+  for (let i = 0; i < 12; i++) {
+    if (d && d.logged_in === true) return d;
+    if (d && d.has_account === false) return d; // cadastro real
+    await new Promise(r => setTimeout(r, 1000));
+    d = await refreshAccountInfo();
+  }
+  return d;
+}
+
 async function accountRegister() {
   const username = $("#account-username")?.value?.trim();
   const password = $("#account-password")?.value || "";
@@ -1088,7 +1218,8 @@ async function refreshExtensionInfo() {
     const chromeEl = $("#ext-chrome-ready");
     const firefoxEl = $("#ext-firefox-ready");
     const openStore = $("#ext-open-store");
-    if (openStore) openStore.disabled = !(d.chrome?.browser_ok);
+    // Web Store usa o navegador padrão se Chrome não estiver no PATH (ex.: Windows).
+    if (openStore) openStore.disabled = false;
     if (rootEl) rootEl.textContent = d.root || "\u2014";
     if (chromeEl) {
       const parts = [];
@@ -1185,6 +1316,48 @@ async function openExtensionDir(browser) {
     toast("Pasta aberta");
   } catch (e) {
     toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+let sqliteInfoBusy = false;
+
+async function refreshSqliteInfo() {
+  if (sqliteInfoBusy) return;
+  sqliteInfoBusy = true;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const [infoR, statusR] = await Promise.all([
+      fetch("/api/scraper/info", { signal: ctrl.signal }),
+      fetch("/api/status", { signal: ctrl.signal }),
+    ]);
+    clearTimeout(t);
+    const info = (await infoR.json()).info || {};
+    const st = info.storage || {};
+    const status = await statusR.json();
+    const scrap = status.services?.scraper || {};
+    const pathEl = $("#sqlite-path");
+    const docsEl = $("#sqlite-docs");
+    const hostsEl = $("#sqlite-hosts");
+    const sizeEl = $("#sqlite-size");
+    const backendEl = $("#sqlite-backend");
+    const stateEl = $("#sqlite-scraper-state");
+    const badge = $("#sqlite-badge");
+    if (backendEl) backendEl.textContent = info.backend || st.backend || "sqlite";
+    if (pathEl) pathEl.textContent = st.path || "\u2014";
+    if (docsEl) docsEl.textContent = st.doc_count != null ? String(st.doc_count) : "\u2014";
+    if (hostsEl) hostsEl.textContent = st.host_databases != null ? String(st.host_databases) : "\u2014";
+    if (sizeEl) sizeEl.textContent = st.file_size != null ? fmtBytes(st.file_size) : "\u2014";
+    if (stateEl) stateEl.textContent = stateLabel(scrap.state || (info.running ? "running" : "stopped"));
+    if (badge) {
+      badge.textContent = (info.backend || st.backend) === "sqlite" ? "sqlite" : (info.backend || "local");
+      badge.className = "badge ok";
+    }
+  } catch {
+    const pathEl = $("#sqlite-path");
+    if (pathEl) pathEl.textContent = "erro ao consultar";
+  } finally {
+    sqliteInfoBusy = false;
   }
 }
 
@@ -1428,6 +1601,13 @@ async function toggleDNSExternal() {
 function siteUrl(host, port, dnsMode) {
   const h = host.replace(/:\d+$/, "");
   const useHost = dnsMode === "system" ? h : "127.0.0.1";
+  // Prefere HTTPS quando :443 está no ar; senão HTTP.
+  if (currentTLSPort === 443) {
+    return `https://${useHost}/`;
+  }
+  if (currentTLSPort > 0) {
+    return `https://${useHost}:${currentTLSPort}/`;
+  }
   const base = port === 80 || port === 0
     ? `http://${useHost}/`
     : `http://${useHost}:${port}/`;
@@ -1497,9 +1677,109 @@ async function deleteSite(host) {
   } catch { toast("Erro ao remover", 3000); }
 }
 
+function escHtml(s) {
+  return escapeHtml(String(s ?? ""));
+}
+
+async function refreshRegistry() {
+  try {
+    const [st, list] = await Promise.all([
+      fetch("/api/registry/status", { credentials: "same-origin" }).then(r => r.json()),
+      fetch("/api/registry", { credentials: "same-origin" }).then(r => r.json()),
+    ]);
+    const badge = $("#registry-gossip-badge");
+    if (badge) {
+      const g = st.gossip || {};
+      if (g.running) {
+        badge.textContent = `gossip ${g.peers || 0} · sync ${g.sync_events || 0}`;
+      } else {
+        badge.textContent = st.enabled ? "local" : "off";
+      }
+    }
+    const box = $("#registry-list");
+    if (!box) return;
+    const domains = list.domains || [];
+    if (!domains.length) {
+      box.innerHTML = "<p class='muted'>Nenhum domínio no ledger local ainda.</p>";
+      return;
+    }
+    box.innerHTML = domains.map(d => {
+      const addrs = [].concat(d.aaaa || [], d.a || []).join(", ") || "—";
+      return `<div class="kv"><span class="mono">${escHtml(d.domain)}</span><b class="mono" style="font-size:11px;word-break:break-all">${escHtml(addrs)}</b></div>`;
+    }).join("");
+  } catch {
+    if ($("#registry-list")) $("#registry-list").innerHTML = "<p class='muted'>Registry indisponível</p>";
+  }
+}
+
+async function registryRegister() {
+  const domain = $("#registry-domain")?.value?.trim();
+  const msg = $("#registry-msg");
+  if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
+  if (!domain) { toast("Informe o domínio .bl"); return; }
+  try {
+    const r = await fetch("/api/registry/register", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domain }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || "falha no registro");
+    toast("Domínio registrado — AAAA Ygg publicado no ledger");
+    if (msg) {
+      msg.style.display = "block";
+      msg.textContent = d.hint || "OK";
+    }
+    refreshRegistry();
+  } catch (e) {
+    if (msg) {
+      msg.style.display = "block";
+      msg.style.color = "var(--red)";
+      msg.textContent = String(e.message || e);
+    }
+    toast("Erro: " + (e.message || e), 4000);
+  }
+}
+
+async function registrySync() {
+  const msg = $("#registry-msg");
+  if (msg) {
+    msg.style.display = "block";
+    msg.style.color = "";
+    msg.textContent = "sincronizando…";
+  }
+  try {
+    const r = await fetch("/api/registry/sync", { method: "POST", credentials: "same-origin" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "falha no sync");
+    const g = d.gossip || {};
+    let line = `peers=${d.peers ?? g.peers ?? 0} · aplicados=${d.applied ?? 0} · tentados=${d.tried ?? 0} · sync_events=${g.sync_events ?? 0}`;
+    if (Array.isArray(d.errors) && d.errors.length) {
+      line += " — " + d.errors[0];
+    }
+    if (msg) {
+      msg.style.display = "block";
+      msg.style.color = (d.connected > 0 || d.applied > 0) ? "" : "var(--orange, #c60)";
+      msg.textContent = line;
+    }
+    toast(d.connected > 0
+      ? `Sync: ${d.applied || 0} novos · ${d.connected} peers`
+      : "Nenhum Agent peer encontrado", 3500);
+    refreshRegistry();
+  } catch (e) {
+    toast("Erro sync: " + (e.message || e), 4000);
+    if (msg) {
+      msg.style.display = "block";
+      msg.style.color = "var(--red)";
+      msg.textContent = String(e.message || e);
+    }
+  }
+}
+
 async function doWebEnable80() {
   const btn = $("#web-enable-80");
-  if (!confirm("Ativar porta 80 (cap_net_bind_service)? Ser\u00e1 pedida senha root. O agente ser\u00e1 reiniciado automaticamente.")) return;
+  if (!confirm("Ativar portas 80 e 443 (cap_net_bind_service)? Será pedida senha root. O agente reinicia automaticamente.")) return;
   const orig = btn.textContent;
   btn.disabled = true;
   btn.textContent = "aplicando...";
@@ -1593,8 +1873,11 @@ async function doYggPriv() {
 
 async function doDNS(action) {
   const btn = action === "enable-system" ? $("#dns-enable") : $("#dns-disable");
+  const win = /win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "");
   if (!confirm(action === "enable-system"
-    ? "Ativar DNS no sistema? Ser\u00e1 pedida senha (root) para: setcap no coredns e integra\u00e7\u00e3o do resolvedor."
+    ? (win
+      ? "Ativar DNS no sistema (Windows)? O Agent precisa estar como Administrador: CoreDNS na porta 53 + regra NRPT para .bl."
+      : "Ativar DNS no sistema? Ser\u00e1 pedida senha (root) para: setcap no coredns e integra\u00e7\u00e3o do resolvedor.")
     : "Desativar DNS do sistema e restaurar configura\u00e7\u00e3o original?")) return;
   btn.disabled = true;
   const orig = btn.textContent;
@@ -1763,6 +2046,10 @@ document.addEventListener("click", (ev) => {
     if (key) copyText(key);
   }
   if (ev.target.id === "site-add") addSite();
+  if (ev.target.id === "registry-register") registryRegister();
+  if (ev.target.id === "registry-sync") registrySync();
+  if (ev.target.id === "ports-refresh") refreshNetworkPorts();
+  if (ev.target.id === "registry-refresh") refreshRegistry();
   if (ev.target.id === "web-enable-80") doWebEnable80();
   if (ev.target.id === "web-restart") doWebRestart();
   if (ev.target.id === "scraper-add-url") addScraperURL();
@@ -2028,10 +2315,11 @@ async function doUpdateInstall() {
 
 // Gate primeiro: sem login o painel fica bloqueado
 document.body.classList.add("setup-locked");
-refreshAccountInfo().then(() => {
+bootAccountGate().then(() => {
   fetchStatus();
   fetchDNSStatus();
   renderSites();
+  refreshRegistry();
   refreshExtensionInfo();
 });
 document.querySelectorAll("[id^='cfg-']").forEach(el => {

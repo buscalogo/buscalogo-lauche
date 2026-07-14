@@ -22,7 +22,11 @@ func isSystemPath(p string) bool {
 }
 
 func isDaemonBinary(name string) bool {
-	return name == "buscalogo-agentd" || strings.HasPrefix(name, "buscalogo-agentd")
+	name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	return name == "buscalogo-agentd" ||
+		strings.HasPrefix(name, "buscalogo-agentd") ||
+		name == "buscalogo-registry" ||
+		strings.HasPrefix(name, "buscalogo-registry")
 }
 
 func userDataHome() (string, error) {
@@ -52,6 +56,13 @@ func homeDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// MSI / Program Files → ProgramData\BuscaLogo (mesmo layout que o serviço).
+	if dir, ok := machineInstallDataDir(exe); ok {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
 	// Daemon e instalações em /opt usam ~/.buscalogo — evita paths longos
 	// (ex.: unix socket do Yggdrasil) e problemas de permissão em /opt.
 	if isSystemPath(exe) || isDaemonBinary(filepath.Base(exe)) {
@@ -75,9 +86,12 @@ func DaemonExecutable() (string, error) {
 	if isDaemonBinary(base) {
 		return exe, nil
 	}
-	cand := filepath.Join(filepath.Dir(exe), "buscalogo-agentd")
-	if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-		return cand, nil
+	dir := filepath.Dir(exe)
+	for _, name := range []string{"buscalogo-agentd.exe", "buscalogo-agentd"} {
+		cand := filepath.Join(dir, name)
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand, nil
+		}
 	}
 	return exe, nil
 }
@@ -99,6 +113,9 @@ func Data() (string, error)  { return sub("data") }
 func Bin() (string, error)   { return sub(filepath.Join("data", "bin")) }
 func Cache() (string, error) { return sub(filepath.Join("data", "cache")) }
 func Logs() (string, error)  { return sub(filepath.Join("data", "logs")) }
+
+// Certs é o diretório de certificados HTTPS dos sites .bl (prep. CA).
+func Certs() (string, error) { return sub(filepath.Join("data", "certs")) }
 
 func ConfigFile() (string, error) {
 	d, err := Data()

@@ -148,7 +148,7 @@
         <div class="kv"><span>PID</span><b class="pid">—</b></div>
         <div class="kv"><span>Uptime</span><b class="uptime">—</b></div>
         <div class="kv"><span>Reinícios</span><b class="restarts">—</b></div>
-        <div class="kv"><span>IPv6</span><b id="ygg-addr">—</b></div>
+        <div class="kv kv-block"><span>IPv6</span><b id="ygg-addr" class="mono addr-full">—</b></div>
         <div class="kv"><span>Peers</span><b id="ygg-peers-count">—</b></div>
       </div>
       <div class="card-footer">
@@ -188,6 +188,22 @@
         </div>
       </div>
     </div>
+
+    <div class="card" id="card-sqlite" style="display:none">
+      <div class="card-head">
+        <h2>Índice SQLite</h2>
+        <span id="sqlite-badge" class="badge ok">local</span>
+      </div>
+      <div class="card-body">
+        <p class="hint" style="margin:0 0 10px">No Windows o índice de scrape fica em ficheiro local — sem CouchDB.</p>
+        <div class="kv"><span>Backend</span><b id="sqlite-backend">sqlite</b></div>
+        <div class="kv"><span>Ficheiro</span><b id="sqlite-path" class="mono" style="font-size:12px;word-break:break-all">—</b></div>
+        <div class="kv"><span>Páginas</span><b id="sqlite-docs">—</b></div>
+        <div class="kv"><span>Sites</span><b id="sqlite-hosts">—</b></div>
+        <div class="kv"><span>Tamanho</span><b id="sqlite-size">—</b></div>
+        <div class="kv"><span>Scraper</span><b id="sqlite-scraper-state">—</b></div>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -204,6 +220,21 @@
       <div class="stat-card">
         <span class="stat-label">API</span>
         <span id="api-badge-2" class="stat-value badge ok">online</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="card-network-ports">
+    <div class="card-head">
+      <h2>Portas da rede .bl (Ygg)</h2>
+      <span id="ports-badge" class="badge">—</span>
+    </div>
+    <div class="card-body">
+      <p class="hint" id="ports-hint" style="margin:0 0 12px">Verifica gossip (4401), discover (4402), HTTP (:80) e HTTPS (:443) pelo IPv6 Ygg. Sem 443/80 abertos, o site .bl não abre de outros peers.</p>
+      <div id="ports-list" class="ports-list"></div>
+      <p id="ports-firewall-tip" class="hint" style="margin:12px 0 0;display:none;color:var(--amber)"></p>
+      <div class="actions" style="margin-top:12px">
+        <button id="ports-refresh" class="btn" type="button">Verificar de novo</button>
       </div>
     </div>
   </div>
@@ -358,10 +389,10 @@
         <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent)">Sistema</summary>
         <div style="margin-top:8px" class="grid three">
           <div class="kv"><span>Porta 53</span><b id="dns-sys-port53">—</b></div>
-          <div class="kv"><span>systemd-resolved</span><b id="dns-sys-resolved">—</b></div>
-          <div class="kv"><span>/etc/resolv.conf</span><b id="dns-sys-resolv">—</b></div>
+          <div class="kv"><span>Resolvedor</span><b id="dns-sys-resolved">—</b></div>
+          <div class="kv"><span>Política DNS</span><b id="dns-sys-resolv">—</b></div>
           <div class="kv"><span>NetworkManager</span><b id="dns-sys-nm">—</b></div>
-          <div class="kv"><span>setcap</span><b id="dns-sys-setcap">—</b></div>
+          <div class="kv"><span>Privilégio</span><b id="dns-sys-setcap">—</b></div>
           <div class="kv"><span>Usa BuscaLogo</span><b id="dns-sys-uses">—</b></div>
         </div>
       </details>
@@ -382,8 +413,9 @@
 <!-- ===== TAB: SITES ===== -->
 <div class="tab-panel" id="tab-sites">
   <div class="card">
-    <div class="card-head"><h2>Sites Hospedados</h2><span id="web-port-badge-2" class="badge">:80</span></div>
+    <div class="card-head"><h2>Sites Hospedados</h2><span id="web-port-badge-2" class="badge">:80/:443</span></div>
     <p class="hint" id="web-hint"></p>
+    <p class="hint" id="web-tls-hint" style="margin-top:0"></p>
     <div class="card-body">
       <div id="sites-list" style="display:flex;flex-direction:column;gap:8px"></div>
       <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
@@ -402,8 +434,23 @@
       </div>
     </div>
     <div class="actions">
-      <button id="web-restart" class="btn" type="button" title="Reinicia o servidor HTTP dos sites .bl">Reiniciar web</button>
-      <button id="web-enable-80" class="btn" title="Concede cap_net_bind_service (pede senha root)">Ativar porta 80</button>
+      <button id="web-restart" class="btn" type="button" title="Reinicia HTTP/HTTPS dos sites .bl">Reiniciar web</button>
+      <button id="web-enable-80" class="btn" title="Concede cap_net_bind_service (portas 80 e 443)">Ativar portas 80/443</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-head"><h2>Registro .bl (ledger)</h2><span id="registry-gossip-badge" class="badge">—</span></div>
+    <p class="hint">Publica o domínio na mesh via registry seed (GossipSub + Ygg). Outros Agents resolvem o AAAA e acessam seu site — o conteúdo fica neste nó.</p>
+    <div class="card-body">
+      <div class="site-form-row">
+        <input id="registry-domain" type="text" placeholder="receitas.bl" class="site-input">
+        <button id="registry-register" class="btn green" type="button">Registrar (AAAA auto)</button>
+        <button id="registry-sync" class="btn" type="button">Sincronizar</button>
+        <button id="registry-refresh" class="btn" type="button">Atualizar lista</button>
+      </div>
+      <p id="registry-msg" class="hint" style="display:none;margin-top:8px"></p>
+      <div id="registry-list" style="margin-top:12px;display:flex;flex-direction:column;gap:8px"></div>
     </div>
   </div>
 </div>

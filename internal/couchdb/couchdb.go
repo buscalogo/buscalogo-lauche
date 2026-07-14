@@ -47,6 +47,11 @@ func New(cfg *config.Config, buf *logx.Buffer) *Service {
 	return &Service{cfg: cfg, buf: buf, dbInfoCache: map[string]DbInfo{}}
 }
 
+// Enabled indica se o CouchDB está ligado na config (próprio ou externo).
+func (s *Service) Enabled() bool {
+	return s != nil && s.cfg != nil && s.cfg.CouchDB.Enabled
+}
+
 func (s *Service) ReleaseRoot() (string, error) {
 	isExec := func(p string) bool {
 		info, err := os.Stat(p)

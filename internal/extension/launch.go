@@ -5,9 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 
+	"buscalogo-agent/internal/openurl"
 	"buscalogo-agent/internal/paths"
 )
 
@@ -27,32 +28,12 @@ func DirReady(dir string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// FindChromium returns the first available Chromium-based browser binary.
-func FindChromium() (string, error) {
-	for _, bin := range chromiumBins {
-		if p, err := exec.LookPath(bin); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("nenhum Chrome/Chromium/Edge/Brave encontrado no PATH")
-}
-
-// FindFirefox returns the first available Firefox binary.
-func FindFirefox() (string, error) {
-	for _, bin := range firefoxBins {
-		if p, err := exec.LookPath(bin); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("Firefox não encontrado no PATH")
-}
-
 // OpenChromeWebStore abre o Chrome/Chromium no perfil normal, na ficha da extensão.
 func OpenChromeWebStore() (bin string, err error) {
 	return OpenURL(ChromeWebStoreURL)
 }
 
-// OpenURL abre uma URL no Chromium (preferido) ou via xdg-open.
+// OpenURL abre uma URL no Chromium (preferido) ou no navegador padrão do sistema.
 func OpenURL(rawURL string) (bin string, err error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
@@ -60,21 +41,26 @@ func OpenURL(rawURL string) (bin string, err error) {
 	}
 	if bin, err = FindChromium(); err == nil {
 		cmd := exec.Command(bin, rawURL)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.SysProcAttr = detachSysProcAttr()
 		if err := cmd.Start(); err != nil {
 			return bin, err
 		}
 		return bin, nil
 	}
-	if _, lookErr := exec.LookPath("xdg-open"); lookErr != nil {
-		return "", fmt.Errorf("%v (e xdg-open indisponível)", err)
+	chromiumErr := err
+	if openErr := openurl.Open(rawURL); openErr == nil {
+		return "system", nil
 	}
-	cmd := exec.Command("xdg-open", rawURL)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return "xdg-open", err
+	if runtime.GOOS != "windows" {
+		if _, lookErr := exec.LookPath("xdg-open"); lookErr == nil {
+			cmd := exec.Command("xdg-open", rawURL)
+			cmd.SysProcAttr = detachSysProcAttr()
+			if err := cmd.Start(); err == nil {
+				return "xdg-open", nil
+			}
+		}
 	}
-	return "xdg-open", nil
+	return "", fmt.Errorf("%v (e abrir URL no sistema falhou)", chromiumErr)
 }
 
 func profileDir(browser string) (string, error) {
@@ -112,7 +98,7 @@ func LaunchChrome(extDir string) (bin string, profile string, err error) {
 		"http://127.0.0.1:9970",
 	}
 	cmd := exec.Command(bin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return bin, profile, err
 	}
@@ -130,7 +116,7 @@ func LaunchFirefoxGuide(extDir string) (bin string, copiedPath bool, err error) 
 	}
 	copiedPath = copyToClipboard(extDir)
 	cmd := exec.Command(bin, "about:debugging#/runtime/this-firefox")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return bin, copiedPath, err
 	}
@@ -227,7 +213,10 @@ func copyToClipboard(text string) bool {
 }
 
 func openFileManager(dir string) error {
+	if runtime.GOOS == "windows" {
+		return openurl.OpenPath(dir)
+	}
 	cmd := exec.Command("xdg-open", dir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachSysProcAttr()
 	return cmd.Start()
 }

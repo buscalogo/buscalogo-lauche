@@ -3,27 +3,25 @@ package yggdrasil
 import (
 	"encoding/json"
 	"fmt"
-	"net"
-	"os"
 	"time"
 )
 
 // AdminInfo agrega informações úteis do socket admin do Yggdrasil.
 type AdminInfo struct {
-	SocketExists bool        `json:"socket_exists"`
-	Reachable    bool        `json:"reachable"`
-	Self         *SelfInfo   `json:"self,omitempty"`
-	Peers        []PeerInfo  `json:"peers"`
-	Error        string      `json:"error,omitempty"`
+	SocketExists bool       `json:"socket_exists"`
+	Reachable    bool       `json:"reachable"`
+	Self         *SelfInfo  `json:"self,omitempty"`
+	Peers        []PeerInfo `json:"peers"`
+	Error        string     `json:"error,omitempty"`
 }
 
 type SelfInfo struct {
-	Key      string   `json:"key"`
-	Address  string   `json:"address"`
-	Subnet   string   `json:"subnet"`
-	Coords   []uint64 `json:"coords"`
-	Build    string   `json:"build"`
-	Version  string   `json:"version"`
+	Key     string   `json:"key"`
+	Address string   `json:"address"`
+	Subnet  string   `json:"subnet"`
+	Coords  []uint64 `json:"coords"`
+	Build   string   `json:"build"`
+	Version string   `json:"version"`
 }
 
 type PeerInfo struct {
@@ -37,38 +35,30 @@ type PeerInfo struct {
 }
 
 func (s *Service) adminSocket() string {
-	if sock, err := adminSocketPath(); err == nil {
-		return sock
+	uri, err := adminListenURI()
+	if err != nil {
+		return ""
 	}
-	return ""
+	return uri
 }
 
-// AdminInfo consulta o socket admin e retorna informações do nó e peers.
+// AdminInfo consulta o endpoint admin e retorna informações do nó e peers.
 func (s *Service) AdminInfo() *AdminInfo {
-	sock := s.adminSocket()
 	info := &AdminInfo{SocketExists: false, Reachable: false, Peers: make([]PeerInfo, 0)}
-	if sock == "" {
-		info.Error = "caminho do socket admin não resolvido"
-		return info
-	}
-	if _, err := os.Stat(sock); err != nil {
-		if os.IsNotExist(err) {
-			info.Error = "socket admin ainda não criado"
-		} else {
-			info.Error = err.Error()
-		}
+	ready, errMsg := adminEndpointReady()
+	if !ready {
+		info.Error = errMsg
 		return info
 	}
 	info.SocketExists = true
 
-	conn, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
+	conn, err := adminDial(500 * time.Millisecond)
 	if err != nil {
-		info.Error = fmt.Sprintf("conectar ao socket: %v", err)
+		info.Error = fmt.Sprintf("conectar ao admin: %v", err)
 		return info
 	}
-	defer conn.Close()
-	info.Reachable = true
 	_ = conn.Close()
+	info.Reachable = true
 
 	self, err := s.adminRequest(map[string]any{"request": "getSelf"})
 	if err != nil {
@@ -87,8 +77,7 @@ func (s *Service) AdminInfo() *AdminInfo {
 }
 
 func (s *Service) adminRequest(req map[string]any) (map[string]any, error) {
-	sock := s.adminSocket()
-	conn, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
+	conn, err := adminDial(500 * time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +141,9 @@ func parsePeers(m map[string]any) []PeerInfo {
 					Priority: getUint64(p, "priority"),
 					UpTime:   getInt64(p, "uptime"),
 				}
+				if peer.Address == "" && peer.Key != "" {
+					peer.Address = AddrForKeyHex(peer.Key)
+				}
 				peers = append(peers, peer)
 			}
 		}
@@ -163,10 +155,14 @@ func parsePeers(m map[string]any) []PeerInfo {
 			if p, ok := v.(map[string]any); ok {
 				peer := PeerInfo{
 					Key:      getString(p, "key"),
+					Address:  getString(p, "address"),
 					Endpoint: getString(p, "endpoint"),
 					Port:     getUint64(p, "port"),
 					Priority: getUint64(p, "priority"),
 					UpTime:   getInt64(p, "uptime"),
+				}
+				if peer.Address == "" && peer.Key != "" {
+					peer.Address = AddrForKeyHex(peer.Key)
 				}
 				peers = append(peers, peer)
 			}

@@ -100,11 +100,24 @@ func New(cdb *couchdb.Service, buf *logx.Buffer) *Service {
 	return &Service{cdb: cdb, buf: buf}
 }
 
+// useCouch: persiste em CouchDB quando habilitado; senão usa ficheiros em identity/.
+func (s *Service) useCouch() bool {
+	return s != nil && s.cdb != nil && s.cdb.Enabled()
+}
+
 func (s *Service) available() error {
-	if s == nil || s.cdb == nil {
-		return fmt.Errorf("CouchDB indisponível")
+	if s == nil {
+		return fmt.Errorf("serviço de conta indisponível")
 	}
 	return nil
+}
+
+// StorageBackend descreve onde a conta está guardada.
+func (s *Service) StorageBackend() string {
+	if s.useCouch() {
+		return "couchdb"
+	}
+	return "file"
 }
 
 func keyPath() (string, error) {
@@ -148,6 +161,26 @@ func (s *Service) EnsureServerID() (string, error) {
 	}
 	s.mu.Unlock()
 
+	if !s.useCouch() {
+		if id, err := loadServerIDFile(); err == nil && id != "" {
+			s.mu.Lock()
+			s.serverID = id
+			s.mu.Unlock()
+			return id, nil
+		}
+		id := newUUID()
+		if err := saveServerIDFile(id); err != nil {
+			return "", err
+		}
+		s.mu.Lock()
+		s.serverID = id
+		s.mu.Unlock()
+		if s.buf != nil {
+			s.buf.Infof("account", "server_id gerado (ficheiro): %s", id)
+		}
+		return id, nil
+	}
+
 	_ = s.cdb.EnsureDB(configDB)
 	body, rev, err := s.cdb.GetDoc(configDB, serverDoc)
 	if err == nil && len(body) > 0 {
@@ -156,6 +189,7 @@ func (s *Service) EnsureServerID() (string, error) {
 			s.mu.Lock()
 			s.serverID = doc.ServerID
 			s.mu.Unlock()
+			_ = saveServerIDFile(doc.ServerID) // espelho local
 			return doc.ServerID, nil
 		}
 		_ = rev
@@ -179,14 +213,32 @@ func (s *Service) EnsureServerID() (string, error) {
 				s.mu.Lock()
 				s.serverID = doc2.ServerID
 				s.mu.Unlock()
+				_ = saveServerIDFile(doc2.ServerID)
 				return doc2.ServerID, nil
 			}
+		}
+		// CouchDB caiu: fallback ficheiro
+		if sid, err2 := loadServerIDFile(); err2 == nil && sid != "" {
+			s.mu.Lock()
+			s.serverID = sid
+			s.mu.Unlock()
+			return sid, nil
+		}
+		if err2 := saveServerIDFile(id); err2 == nil {
+			s.mu.Lock()
+			s.serverID = id
+			s.mu.Unlock()
+			if s.buf != nil {
+				s.buf.Warnf("account", "server_id em ficheiro (CouchDB falhou: %v)", err)
+			}
+			return id, nil
 		}
 		return "", err
 	}
 	s.mu.Lock()
 	s.serverID = id
 	s.mu.Unlock()
+	_ = saveServerIDFile(id)
 	if s.buf != nil {
 		s.buf.Infof("account", "server_id gerado: %s", id)
 	}
@@ -234,8 +286,15 @@ func readPrivateKey() (ed25519.PrivateKey, error) {
 
 func (s *Service) findByUsername(username string) (*userDoc, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
+	if !s.useCouch() {
+		return findUserFileByUsername(username)
+	}
 	rows, err := s.cdb.ListDocsPaged(usersDB, "user_", "user_\ufff0", 500, 0)
 	if err != nil {
+		// fallback ficheiro se CouchDB não responder
+		if doc, err2 := findUserFileByUsername(username); err2 == nil && doc != nil {
+			return doc, nil
+		}
 		return nil, err
 	}
 	for _, row := range rows {
@@ -256,10 +315,16 @@ func (s *Service) findByUsername(username string) (*userDoc, error) {
 }
 
 func (s *Service) findByID(userID string) (*userDoc, error) {
+	if !s.useCouch() {
+		return loadUserFile(userID)
+	}
 	body, rev, err := s.cdb.GetDoc(usersDB, "user_"+userID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, nil
+		}
+		if doc, err2 := loadUserFile(userID); err2 == nil && doc != nil {
+			return doc, nil
 		}
 		return nil, err
 	}
@@ -276,6 +341,28 @@ func (s *Service) findByID(userID string) (*userDoc, error) {
 		doc.UserID = userID
 	}
 	return &doc, nil
+}
+
+func (s *Service) putUser(doc *userDoc) error {
+	if doc == nil {
+		return fmt.Errorf("userDoc nulo")
+	}
+	if !s.useCouch() {
+		return saveUserFile(doc)
+	}
+	_ = s.cdb.EnsureDB(usersDB)
+	raw, _ := json.Marshal(doc)
+	if err := s.cdb.PutDoc(usersDB, doc.ID, raw); err != nil {
+		if err2 := saveUserFile(doc); err2 == nil {
+			if s.buf != nil {
+				s.buf.Warnf("account", "utilizador gravado em ficheiro (CouchDB: %v)", err)
+			}
+			return nil
+		}
+		return err
+	}
+	_ = saveUserFile(doc) // espelho
+	return nil
 }
 
 func publicFromDoc(doc *userDoc) *PublicUser {
@@ -372,19 +459,39 @@ func (s *Service) RestoreSession() {
 	}
 	var sf sessionFile
 	if json.Unmarshal(raw, &sf) != nil || sf.Token == "" || sf.UserID == "" {
+		if s.buf != nil {
+			s.buf.Warnf("account", "session.json inválido — ignorando")
+		}
 		return
 	}
 	doc, err := s.findByID(sf.UserID)
-	if err != nil || doc == nil {
+	if err != nil {
+		// store ainda a subir / falha transitória: NÃO apagar a sessão.
+		if s.buf != nil {
+			s.buf.Warnf("account", "restore sessão adiado (%s): %v", s.StorageBackend(), err)
+		}
+		return
+	}
+	if doc == nil {
+		// Usuário realmente sumiu do banco — aí sim limpa.
+		if s.buf != nil {
+			s.buf.Warnf("account", "usuário da sessão não existe mais — limpando session.json")
+		}
 		s.clearSessionFile()
 		return
 	}
 	priv, err := readPrivateKey()
 	if err != nil {
+		if s.buf != nil {
+			s.buf.Warnf("account", "restore sessão: account.key indisponível: %v", err)
+		}
 		return
 	}
 	want := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
 	if doc.PublicKey != "" && doc.PublicKey != want {
+		if s.buf != nil {
+			s.buf.Warnf("account", "restore sessão: chave local não bate com a conta (use import do backup)")
+		}
 		return
 	}
 	if doc.PublicKey == "" {
@@ -398,6 +505,33 @@ func (s *Service) RestoreSession() {
 	s.privKey = priv
 	s.pubKeyHex = user.PublicKey
 	s.mu.Unlock()
+	if s.buf != nil {
+		s.buf.Infof("account", "sessão restaurada: %s", user.Username)
+	}
+}
+
+// RestoreSessionRetry tenta restaurar a sessão com backoff (startup).
+func (s *Service) RestoreSessionRetry(attempts int, delay time.Duration) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if delay <= 0 {
+		delay = time.Second
+	}
+	for i := 0; i < attempts; i++ {
+		s.RestoreSession()
+		if s.Current() != nil {
+			return
+		}
+		path, err := sessionPath()
+		if err != nil {
+			return
+		}
+		if _, err := os.Stat(path); err != nil {
+			return // sem arquivo — nada a restaurar
+		}
+		time.Sleep(delay)
+	}
 }
 
 // ValidateSession valida o token e devolve o usuário ativo.
@@ -461,7 +595,6 @@ func (s *Service) Register(username, password string) (*PublicUser, string, erro
 	if _, err := s.EnsureServerID(); err != nil {
 		return nil, "", err
 	}
-	_ = s.cdb.EnsureDB(usersDB)
 
 	if existing, err := s.findByUsername(username); err != nil {
 		return nil, "", err
@@ -494,8 +627,7 @@ func (s *Service) Register(username, password string) (*PublicUser, string, erro
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	raw, _ := json.Marshal(doc)
-	if err := s.cdb.PutDoc(usersDB, doc.ID, raw); err != nil {
+	if err := s.putUser(&doc); err != nil {
 		return nil, "", err
 	}
 	user := publicFromDoc(&doc)
@@ -504,7 +636,7 @@ func (s *Service) Register(username, password string) (*PublicUser, string, erro
 		return nil, "", err
 	}
 	if s.buf != nil {
-		s.buf.Infof("account", "conta criada: %s", username)
+		s.buf.Infof("account", "conta criada (%s): %s", s.StorageBackend(), username)
 	}
 	return user, token, nil
 }
@@ -541,8 +673,7 @@ func (s *Service) Login(username, password string) (*PublicUser, string, error) 
 		}
 		doc.PublicKey = hex.EncodeToString(pub)
 		doc.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		raw, _ := json.Marshal(doc)
-		_ = s.cdb.PutDoc(usersDB, doc.ID, raw)
+		_ = s.putUser(doc)
 		priv = newPriv
 		if s.buf != nil {
 			s.buf.Warnf("account", "chave privada regenerada para %s — scrapes antigos não verificam com a nova chave", username)
@@ -556,8 +687,7 @@ func (s *Service) Login(username, password string) (*PublicUser, string, error) 
 		if doc.PublicKey == "" {
 			doc.PublicKey = want
 			doc.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			raw, _ := json.Marshal(doc)
-			_ = s.cdb.PutDoc(usersDB, doc.ID, raw)
+			_ = s.putUser(doc)
 		}
 	}
 
@@ -576,7 +706,13 @@ func (s *Service) Logout() {
 
 // HasAccount indica se já existe pelo menos um usuário cadastrado.
 func (s *Service) HasAccount() bool {
-	if s == nil || s.cdb == nil {
+	if s == nil {
+		return false
+	}
+	if hasUserFile() {
+		return true
+	}
+	if !s.useCouch() {
 		return false
 	}
 	_ = s.cdb.EnsureDB(usersDB)
@@ -609,12 +745,26 @@ func (s *Service) Me() map[string]any {
 		"setup_required": !has,
 		"login_required": has && !loggedIn,
 		"locked":         !loggedIn,
+		"storage":        s.StorageBackend(),
 	}
 	if u := s.Current(); u != nil {
 		out["user"] = u
 		out["signing"] = true
 	}
 	return out
+}
+
+// SigningKey devolve a chave privada Ed25519 da sessão (account.key).
+func (s *Service) SigningKey() (ed25519.PrivateKey, error) {
+	s.RestoreSession()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.user == nil || len(s.privKey) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("faça login para assinar domínios")
+	}
+	out := make(ed25519.PrivateKey, len(s.privKey))
+	copy(out, s.privKey)
+	return out, nil
 }
 
 // ExportBackup gera JSON com chave privada (requer sessão).
@@ -670,7 +820,6 @@ func (s *Service) ImportBackup(raw json.RawMessage, newPassword string) (*Public
 	if _, err := s.EnsureServerID(); err != nil {
 		return nil, "", err
 	}
-	_ = s.cdb.EnsureDB(usersDB)
 
 	var priv ed25519.PrivateKey
 	var pubHex string
@@ -720,11 +869,12 @@ func (s *Service) ImportBackup(raw json.RawMessage, newPassword string) (*Public
 		CreatedAt:    created,
 		UpdatedAt:    now,
 	}
-	if existing, rev, err := s.cdb.GetDoc(usersDB, docID); err == nil && len(existing) > 0 {
-		doc.Rev = rev
+	if s.useCouch() {
+		if existing, rev, err := s.cdb.GetDoc(usersDB, docID); err == nil && len(existing) > 0 {
+			doc.Rev = rev
+		}
 	}
-	rawDoc, _ := json.Marshal(doc)
-	if err := s.cdb.PutDoc(usersDB, docID, rawDoc); err != nil {
+	if err := s.putUser(&doc); err != nil {
 		return nil, "", err
 	}
 	user := publicFromDoc(&doc)

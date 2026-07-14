@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"buscalogo-agent/frontend"
@@ -22,9 +22,12 @@ import (
 	"buscalogo-agent/internal/couchdb"
 	"buscalogo-agent/internal/dns"
 	"buscalogo-agent/internal/extension"
+	"buscalogo-agent/internal/ledger"
 	"buscalogo-agent/internal/logx"
+	"buscalogo-agent/internal/netcheck"
 	"buscalogo-agent/internal/openurl"
 	"buscalogo-agent/internal/p2p"
+	"buscalogo-agent/internal/p2pdomain"
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/scraper"
 	"buscalogo-agent/internal/sites"
@@ -36,22 +39,28 @@ import (
 )
 
 type Server struct {
-	cfg     *config.Config
-	buf     *logx.Buffer
-	coredns *coredns.Service
-	ygg     *yggdrasil.Service
-	couchdb *couchdb.Service
-	scraper *scraper.Service
-	account *account.Service
-	p2p     *p2p.Connector
-	dns     *dns.Manager
-	sites   *sites.Manager
-	updater *update.Service
-	srv     *http.Server
+	cfg       *config.Config
+	buf       *logx.Buffer
+	coredns   *coredns.Service
+	ygg       *yggdrasil.Service
+	couchdb   *couchdb.Service
+	scraper   *scraper.Service
+	account   *account.Service
+	p2p       *p2p.Connector
+	dns       *dns.Manager
+	sites     *sites.Manager
+	updater   *update.Service
+	ledger    *ledger.Engine
+	p2pdomain *p2pdomain.Service
+	srv       *http.Server
+
+	portsMu    sync.Mutex
+	portsCache netcheck.Summary
+	portsAt    time.Time
 }
 
-func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, acct *account.Service, p2pConn *p2p.Connector, d *dns.Manager, sm *sites.Manager, upd *update.Service) *Server {
-	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, account: acct, p2p: p2pConn, dns: d, sites: sm, updater: upd}
+func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdrasil.Service, cdb *couchdb.Service, scr *scraper.Service, acct *account.Service, p2pConn *p2p.Connector, d *dns.Manager, sm *sites.Manager, upd *update.Service, eng *ledger.Engine, domainGossip *p2pdomain.Service) *Server {
+	s := &Server{cfg: cfg, buf: buf, coredns: cdns, ygg: y, couchdb: cdb, scraper: scr, account: acct, p2p: p2pConn, dns: d, sites: sm, updater: upd, ledger: eng, p2pdomain: domainGossip}
 	if upd != nil {
 		upd.SetOnInstalled(func() {
 			daemon, err := paths.DaemonExecutable()
@@ -77,12 +86,17 @@ func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdras
 // malicioso resolve seu domínio para 127.0.0.1 e faz o navegador do usuário
 // atacar a API local.
 func (s *Server) hostGuard(next http.Handler) http.Handler {
+	listen := s.cfg.API.Listen
+	// Registry público escuta em 0.0.0.0 — não aplicar rebinding guard estrito.
+	if strings.HasPrefix(listen, "0.0.0.0:") || strings.HasPrefix(listen, "[::]:") || strings.HasPrefix(listen, ":") {
+		return next
+	}
 	allowed := make(map[string]bool)
-	_, port, _ := strings.Cut(s.cfg.API.Listen, ":")
+	_, port, _ := strings.Cut(listen, ":")
 	for _, h := range []string{"127.0.0.1", "localhost", "::1"} {
 		allowed[fmt.Sprintf("%s:%s", h, port)] = true
 	}
-	allowed[s.cfg.API.Listen] = true
+	allowed[listen] = true
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowed[r.Host] {
 			http.Error(w, "Forbidden", http.StatusForbidden)
@@ -140,6 +154,7 @@ func isLocalOrigin(origin string) bool {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/network/ports", s.handleNetworkPorts)
 	mux.HandleFunc("POST /api/service/{name}/{action}", s.handleService)
 	mux.HandleFunc("GET /api/logs/recent", s.handleLogsRecent)
 	mux.HandleFunc("GET /api/logs/stream", s.handleLogsStream)
@@ -178,6 +193,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/account/logout", s.handleAccountLogout)
 	mux.HandleFunc("GET /api/account/me", s.handleAccountMe)
 	mux.HandleFunc("GET /api/account/export", s.handleAccountExport)
+	mux.HandleFunc("GET /api/registry/status", s.handleRegistryStatus)
+	mux.HandleFunc("GET /api/registry/bootstrap", s.handleRegistryBootstrap)
+	mux.HandleFunc("GET /api/registry", s.handleRegistryList)
+	mux.HandleFunc("GET /api/registry/{domain}", s.handleRegistryLookup)
+	mux.HandleFunc("POST /api/registry/register", s.handleRegistryRegister)
+	mux.HandleFunc("POST /api/registry/sync", s.handleRegistrySync)
+	mux.HandleFunc("POST /api/registry/peers", s.handleRegistryAddPeer)
+	mux.HandleFunc("POST /api/registry/{domain}/update", s.handleRegistryUpdate)
+	mux.HandleFunc("POST /api/registry/{domain}/transfer", s.handleRegistryTransfer)
+	mux.HandleFunc("GET /dns-query", s.handleDNSJSON)
+	mux.HandleFunc("GET /api/dns-query", s.handleDNSJSON)
 	mux.HandleFunc("POST /api/account/import", s.handleAccountImport)
 	mux.HandleFunc("GET /api/extension/info", s.handleExtensionInfo)
 	mux.HandleFunc("POST /api/extension/open-dir", s.handleExtensionOpenDir)
@@ -236,6 +262,7 @@ type statusResp struct {
 	Systray   tray.EnvInfo   `json:"systray"`
 	Autostart bool           `json:"autostart"`
 	Config    config.Data    `json:"config"`
+	Network   any            `json:"network,omitempty"`
 }
 
 type webInfo struct {
@@ -246,27 +273,51 @@ type webInfo struct {
 	ExternalListen bool   `json:"external_listen"`
 	Running        bool   `json:"running"`
 	Error          string `json:"error,omitempty"`
+	TLSRunning     bool   `json:"tls_running"`
+	TLSPort        int    `json:"tls_port"`
+	TLSError       string `json:"tls_error,omitempty"`
+	TLSMode        string `json:"tls_mode,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	running, actualPort, fallback, webErr := s.sites.WebStatus()
-	if actualPort == 0 {
-		actualPort = s.sites.ActualPort()
+	running, actualPort, fallback, webErr := false, 0, false, ""
+	tlsRunning, tlsPort, tlsErr, tlsMode := false, 0, "", ""
+	if s.sites != nil {
+		running, actualPort, fallback, webErr = s.sites.WebStatus()
+		if actualPort == 0 {
+			actualPort = s.sites.ActualPort()
+		}
+		if !running {
+			fallback = s.sites.PortFallback()
+		}
+		tlsRunning, tlsPort, tlsErr, tlsMode = s.sites.TLSStatus()
 	}
-	if !running {
-		fallback = s.sites.PortFallback()
+	services := map[string]any{}
+	if s.coredns != nil {
+		services["coredns"] = s.coredns.Status()
+	}
+	if s.ygg != nil {
+		services["yggdrasil"] = s.ygg.Status()
+	}
+	if s.couchdb != nil {
+		services["couchdb"] = s.couchdb.Status()
+	} else {
+		services["couchdb"] = map[string]any{"state": "disabled"}
+	}
+	if s.scraper != nil {
+		services["scraper"] = s.scraper.Status()
+	} else {
+		services["scraper"] = map[string]any{"state": "disabled"}
+	}
+	if s.p2pdomain != nil {
+		services["registry_gossip"] = s.p2pdomain.Status()
 	}
 	resp := statusResp{
-		Node:    s.cfg.Node,
-		Version: version.Version,
-		DNSMode: s.cfg.DNS.Mode,
-		Services: map[string]any{
-			"coredns":   s.coredns.Status(),
-			"yggdrasil": s.ygg.Status(),
-			"couchdb":   s.couchdb.Status(),
-			"scraper":   s.scraper.Status(),
-		},
-		System: dns.Detect(s.cfg),
+		Node:     s.cfg.Node,
+		Version:  version.Version,
+		DNSMode:  s.cfg.DNS.Mode,
+		Services: services,
+		System:   dns.Detect(s.cfg),
 		Web: webInfo{
 			Listen:         s.cfg.Web.Listen,
 			Port:           s.cfg.Web.Port,
@@ -275,12 +326,56 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			ExternalListen: s.cfg.Web.ExternalListen,
 			Running:        running,
 			Error:          webErr,
+			TLSRunning:     tlsRunning,
+			TLSPort:        tlsPort,
+			TLSError:       tlsErr,
+			TLSMode:        tlsMode,
 		},
 		Systray:   tray.CheckEnvironment(),
 		Autostart: autostart.IsEnabled(),
 		Config:    s.cfg.Snapshot(),
+		Network:   s.networkPortsSummary(actualPort, false),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleNetworkPorts(w http.ResponseWriter, r *http.Request) {
+	webPort := s.cfg.Web.Port
+	if s.sites != nil {
+		if p := s.sites.ActualPort(); p > 0 {
+			webPort = p
+		}
+	}
+	sum := s.networkPortsSummary(webPort, true)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "network": sum})
+}
+
+func (s *Server) networkPortsSummary(webPort int, force bool) netcheck.Summary {
+	s.portsMu.Lock()
+	if !force && time.Since(s.portsAt) < 25*time.Second && len(s.portsCache.Ports) > 0 {
+		sum := s.portsCache
+		s.portsMu.Unlock()
+		return sum
+	}
+	s.portsMu.Unlock()
+
+	yggIP := ""
+	if s.ygg != nil {
+		yggIP = s.ygg.SelfAddress()
+	}
+	libp2p := s.cfg.Registry.ListenPort
+	if libp2p <= 0 {
+		libp2p = 4401
+	}
+	if webPort <= 0 {
+		webPort = s.cfg.Web.Port
+	}
+	sum := netcheck.CheckBLPorts(yggIP, libp2p, webPort, s.cfg.Web.TLS.Port)
+	s.portsMu.Lock()
+	s.portsCache = sum
+	s.portsAt = time.Now()
+	s.portsMu.Unlock()
+	return sum
 }
 
 func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
@@ -290,12 +385,28 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch name {
 	case "coredns":
+		if s.coredns == nil {
+			writeErr(w, http.StatusServiceUnavailable, "CoreDNS não inicializado")
+			return
+		}
 		err = s.applyAction(action, s.coredns.Start, s.coredns.Stop, s.coredns.Restart)
 	case "yggdrasil":
+		if s.ygg == nil {
+			writeErr(w, http.StatusServiceUnavailable, "Yggdrasil não inicializado")
+			return
+		}
 		err = s.applyAction(action, s.ygg.Start, s.ygg.Stop, s.ygg.Restart)
 	case "couchdb":
+		if s.couchdb == nil {
+			writeErr(w, http.StatusServiceUnavailable, "CouchDB desabilitado neste nó")
+			return
+		}
 		err = s.applyAction(action, s.couchdb.Start, s.couchdb.Stop, s.couchdb.Restart)
 	case "scraper":
+		if s.scraper == nil {
+			writeErr(w, http.StatusServiceUnavailable, "Scraper desabilitado neste nó")
+			return
+		}
 		err = s.applyAction(action, s.scraper.Start, s.scraper.Stop, s.scraper.Restart)
 	case "p2p":
 		if s.p2p == nil {
@@ -311,9 +422,21 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "%s/%s: %v", name, action, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "services": map[string]any{
-		"coredns": s.coredns.Status(), "yggdrasil": s.ygg.Status(), "couchdb": s.couchdb.Status(), "scraper": s.scraper.Status(), "p2p": s.p2pStatusBrief(),
-	}})
+	svcs := map[string]any{}
+	if s.coredns != nil {
+		svcs["coredns"] = s.coredns.Status()
+	}
+	if s.ygg != nil {
+		svcs["yggdrasil"] = s.ygg.Status()
+	}
+	if s.couchdb != nil {
+		svcs["couchdb"] = s.couchdb.Status()
+	}
+	if s.scraper != nil {
+		svcs["scraper"] = s.scraper.Status()
+	}
+	svcs["p2p"] = s.p2pStatusBrief()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "services": svcs})
 }
 
 func (s *Server) handleScraperInfo(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +715,7 @@ func (s *Server) accountFromRequest(r *http.Request) *account.PublicUser {
 
 func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 	if s.account == nil {
-		writeErr(w, http.StatusServiceUnavailable, "conta indisponível (CouchDB)")
+		writeErr(w, http.StatusServiceUnavailable, "conta indisponível")
 		return
 	}
 	var body struct {
@@ -619,7 +742,7 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
 	if s.account == nil {
-		writeErr(w, http.StatusServiceUnavailable, "conta indisponível (CouchDB)")
+		writeErr(w, http.StatusServiceUnavailable, "conta indisponível")
 		return
 	}
 	var body struct {
@@ -660,15 +783,16 @@ func (s *Server) handleAccountMe(w http.ResponseWriter, r *http.Request) {
 			"setup_required": true,
 			"login_required": false,
 			"locked":         true,
-			"error":          "CouchDB indisponível",
+			"error":          "serviço de conta indisponível",
 		})
 		return
 	}
 	s.account.RestoreSession()
-	_ = s.accountFromRequest(r)
-	// Renova cookie se sessão persistida estiver ativa (ex.: após reinício do Agent).
+	// Sessão persistida conta como logada mesmo sem cookie (Neutralino perde cookie no restart).
 	if tok := s.account.SessionToken(); tok != "" && s.account.Current() != nil {
 		s.setAccountCookie(w, tok)
+	} else {
+		_ = s.accountFromRequest(r)
 	}
 	me := s.account.Me()
 	me["ok"] = true
@@ -1435,6 +1559,9 @@ func (s *Server) handleSitesAdd(w http.ResponseWriter, r *http.Request) {
 	if err := s.sites.SyncHosts(); err != nil {
 		s.buf.Warnf("api", "sync hosts: %v", err)
 	}
+	if s.coredns != nil {
+		_, _ = s.coredns.WriteCorefile()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sites": s.sites.ListSites()})
 }
 
@@ -1458,6 +1585,9 @@ func (s *Server) handleSitesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.sites.SyncHosts(); err != nil {
 		s.buf.Warnf("api", "sync hosts: %v", err)
+	}
+	if s.coredns != nil {
+		_, _ = s.coredns.WriteCorefile()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sites": s.sites.ListSites()})
 }
@@ -1490,7 +1620,7 @@ func (s *Server) handleWebEnable80(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
-		"message": "cap_net_bind_service concedido ao agente. Reiniciando para usar a porta 80...",
+		"message": "cap_net_bind_service concedido. Reiniciando para usar portas 80 e 443...",
 	})
 	go s.restartAgent(daemon)
 }
@@ -1502,12 +1632,17 @@ func (s *Server) handleWebRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	time.Sleep(150 * time.Millisecond)
 	running, port, fallback, webErr := s.sites.WebStatus()
+	tlsRunning, tlsPort, tlsErr, tlsMode := s.sites.TLSStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"running":     running,
 		"actual_port": port,
 		"fallback":    fallback,
 		"error":       webErr,
+		"tls_running": tlsRunning,
+		"tls_port":    tlsPort,
+		"tls_error":   tlsErr,
+		"tls_mode":    tlsMode,
 	})
 }
 
@@ -1621,7 +1756,7 @@ func (s *Server) restartAgent(daemon string) {
 		time.Sleep(6 * time.Second)
 		args := daemonArgs(daemon)
 		env := append(os.Environ(), "BUSCALOGO_POST_UPDATE=1")
-		if err := syscall.Exec(daemon, args, env); err != nil {
+		if err := reexecDaemon(daemon, args, env); err != nil {
 			s.buf.Errorf("api", "falha ao re-executar agente: %v", err)
 			os.Exit(1)
 		}

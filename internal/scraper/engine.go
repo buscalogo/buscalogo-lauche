@@ -19,7 +19,7 @@ import (
 
 type Engine struct {
 	cfg     RuntimeConfig
-	store   *Store
+	store   ScrapeStore
 	buf     *logx.Buffer
 	client  *http.Client
 
@@ -43,7 +43,7 @@ type queueMetrics struct {
 	avgProcessingTime float64
 }
 
-func NewEngine(cfg RuntimeConfig, store *Store, buf *logx.Buffer) *Engine {
+func NewEngine(cfg RuntimeConfig, store ScrapeStore, buf *logx.Buffer) *Engine {
 	return &Engine{
 		cfg:         cfg,
 		store:       store,

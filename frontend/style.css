@@ -301,6 +301,20 @@ main {
 .card-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.2px; }
 .card-body { padding: 16px 18px; flex: 1; }
 
+.ports-list { display: flex; flex-direction: column; gap: 10px; }
+.port-row {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.port-row.ok { border-color: rgba(47,191,113,.35); }
+.port-row.warn { border-color: rgba(245,166,35,.4); }
+.port-row.bad { border-color: rgba(230,70,70,.4); }
+.port-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.port-sub { font-size: 12px; margin-top: 4px; }
+.port-hint { font-size: 12px; margin-top: 6px; color: var(--amber); }
+
 .card-footer {
   margin-top: auto;
   border-top: 1px solid var(--border);
@@ -341,9 +355,23 @@ main {
 @media (max-width: 700px) { .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; } }
 
 /* Key-value rows */
-.kv { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13.5px; }
-.kv span { color: var(--muted); }
-.kv b { font-weight: 600; }
+.kv { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 5px 0; font-size: 13.5px; }
+.kv span { color: var(--muted); flex-shrink: 0; }
+.kv b { font-weight: 600; text-align: right; min-width: 0; word-break: break-word; overflow-wrap: anywhere; }
+.kv.kv-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.kv.kv-block b,
+.addr-full {
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+}
 
 /* Stat cards */
 .stat-card {

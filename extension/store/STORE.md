@@ -38,19 +38,25 @@ Publicada: https://chromewebstore.google.com/detail/buscalogo-agent/gecmkbanhikg
 2. **Novo item** → upload do zip Chrome
 3. Preencha com os textos de `listing-pt.md` / `listing-en.md`
 4. **Privacy policy URL:** hospede `PRIVACY.md` (ex.: `https://buscalogo.com/extensao/privacidade`) e cole a URL
-5. Justificativas de permissão (copiar):
+5. Justificativas de permissão (copiar — guia **Práticas de privacidade**):
 
 **Single purpose**  
 > Help the user see whether the current page is indexed by their local BuscaLogo Agent and optionally queue it for indexing.
 
 **tabs**  
-> Read the active tab URL to query the local agent and update the badge/popup.
+> Lê a URL da aba ativa/atualizada para consultar o Agent local e atualizar o badge e o popup (indexada, sugerir ou agente offline). Não abre abas sem ação do usuário e não envia o histórico a servidores remotos.
 
-**Host 127.0.0.1:9970 / localhost:9970**  
-> Communicate only with the BuscaLogo Agent running on the user’s machine. No remote servers.
+**storage**  
+> Guarda apenas a preferência local “Alerta na página” (ligado/desligado). Não armazena histórico de navegação, cookies nem conteúdo das páginas. Os dados ficam só no armazenamento da extensão no navegador do usuário.
 
-**Content scripts (all http/https)**  
-> Show a small on-page status chip (“Indexed” / “Suggest to BuscaLogo”) on the pages the user visits. No page content is uploaded to the cloud.
+**scripting**  
+> Registra e remove o content script do chip de status sob demanda, quando o usuário ativa ou desativa “Alerta na página”. Também injeta o script nas abas já abertas ao religar o alerta. Não executa código remoto nem altera o conteúdo das páginas além do chip da extensão.
+
+**Permissão do host**  
+> A extensão se comunica apenas com o BuscaLogo Agent na máquina do usuário (http://127.0.0.1:9970, http://localhost:9970 e http://*.bl) para lookup e sugestão de indexação. Os padrões http://*/* e https://*/* são opcionais e só mostram o chip de status na página quando o usuário liga o alerta; o conteúdo da página não é enviado à nuvem.
+
+**Código remoto?**  
+> Não, não estou usando Código remoto.
 
 6. Screenshots: 1280×800 ou 640×400 (mín. 1). Tire do popup + chip na página.
 7. Envie para revisão (costuma levar alguns dias).

@@ -3,9 +3,11 @@ package yggdrasil
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"buscalogo-agent/assets"
@@ -191,8 +193,8 @@ func (s *Service) generateNewIdentity(binary, path string) (string, error) {
 	ensureMulticast(&doc)
 	ensureListen(&doc)
 	doc.NodeInfo = map[string]string{"name": s.cfg.Node.Name}
-	if sock, err := adminSocketPath(); err == nil {
-		doc.AdminListen = "unix://" + sock
+	if uri, err := adminListenURI(); err == nil {
+		doc.AdminListen = uri
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -232,8 +234,8 @@ func (s *Service) generateConfFromKey(binary, privKey string) ([]byte, error) {
 	ensureMulticast(&doc)
 	ensureListen(&doc)
 	doc.NodeInfo = map[string]string{"name": s.cfg.Node.Name}
-	if sock, err := adminSocketPath(); err == nil {
-		doc.AdminListen = "unix://" + sock
+	if uri, err := adminListenURI(); err == nil {
+		doc.AdminListen = uri
 	}
 	return json.MarshalIndent(doc, "", "  ")
 }
@@ -324,11 +326,10 @@ func (s *Service) injectPeers(path string) error {
 	doc.Peers = normalizePeers(s.cfg.Yggdrasil.Peers)
 	ensureMulticast(&doc)
 	ensureListen(&doc)
-	if sock, err := adminSocketPath(); err == nil {
-		want := "unix://" + sock
-		if doc.AdminListen != want {
-			doc.AdminListen = want
-			s.buf.Infof("yggdrasil", "AdminListen ajustado para %s", want)
+	if uri, err := adminListenURI(); err == nil {
+		if doc.AdminListen != uri {
+			doc.AdminListen = uri
+			s.buf.Infof("yggdrasil", "AdminListen ajustado para %s", uri)
 		}
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -351,12 +352,11 @@ func (s *Service) logConfigStats(path string) {
 		len(doc.Peers), len(doc.MulticastInterfaces), len(doc.AllowedPublicKeys))
 }
 
-// cleanupAdminSocket remove o socket unix se ele existir.
-// Diferentemente de remover o arquivo de um socket TCP comum, remover o arquivo de um
-// socket Unix é seguro: o inode do socket permanece enquanto houver um fd aberto para ele,
-// e Yggdrasil consegue criar um socket novo no mesmo caminho — o bind não conflita porque
-// cria um inode diferente.
+// cleanupAdminSocket remove o socket unix stale (no-op no Windows / TCP).
 func cleanupAdminSocket(buf *logx.Buffer) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	sock, err := adminSocketPath()
 	if err != nil {
 		return err
@@ -404,10 +404,36 @@ func ensureMulticast(doc *confDoc) {
 	}
 }
 
+func (s *Service) ensureWintun(binDir string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	if !assets.Has("wintun.dll") {
+		return fmt.Errorf("wintun.dll não embutido — rode scripts/fetch-windows-assets.sh e rebuild")
+	}
+	path, err := assets.Ensure("wintun.dll", binDir)
+	if err != nil {
+		return err
+	}
+	if s.buf != nil {
+		s.buf.Infof("yggdrasil", "wintun.dll: %s", path)
+	}
+	return nil
+}
+
 func (s *Service) Start() error {
+	if s.proc != nil {
+		st := s.proc.Status()
+		if st.State == process.StateRunning || st.State == process.StateStarting {
+			return nil
+		}
+	}
 	binary, err := s.BinaryPath()
 	if err != nil {
 		return err
+	}
+	if err := s.ensureWintun(filepath.Dir(binary)); err != nil {
+		return fmt.Errorf("TUN Windows (wintun): %w", err)
 	}
 	conf, err := s.ensureConf(binary)
 	if err != nil {
@@ -416,6 +442,7 @@ func (s *Service) Start() error {
 	// Mata processos antigos PRIMEIRO, depois limpa o socket stale.
 	// A ordem importa: se limpamos o socket antes de matar o processo,
 	// o socket ainda está ativo e cleanupAdminSocket não remove.
+	// Filhos diretos deste agente são preservados (ver KillExistingByBinary).
 	if err := process.KillExistingByBinary(s.buf, "yggdrasil", binary); err != nil {
 		s.buf.Warnf("yggdrasil", "limpeza de processos antigos: %v", err)
 	}
@@ -427,18 +454,16 @@ func (s *Service) Start() error {
 			Name:        "Yggdrasil",
 			Binary:      binary,
 			Args:        []string{"-useconffile", conf},
+			Dir:         filepath.Dir(binary),
 			LogSource:   "yggdrasil",
 			LogBuf:      s.buf,
 			AutoRestart: true,
 			PreStart: func() error {
-				// Mata qualquer Yggdrasil órfão de outra instância do agente
-				// ANTES de limpar o socket. Essencial no auto-restart: sem isso,
-				// o socket fica "in use" e o novo processo morre.
+				// Órfãos de outra instância (PPID != este agente).
 				binary, _ := s.BinaryPath()
 				if err := process.KillExistingByBinary(s.buf, "yggdrasil", binary); err != nil {
 					s.buf.Warnf("yggdrasil", "PreStart: limpeza de processos: %v", err)
 				}
-				// Agora sim, remove o socket stale.
 				return cleanupAdminSocket(s.buf)
 			},
 		})
@@ -470,10 +495,71 @@ func (s *Service) Status() process.Status {
 func (s *Service) Managed() *process.Managed { return s.proc }
 
 // SelfAddress retorna o endereço IPv6 Yggdrasil deste nó, ou "" se indisponível.
+// Nota: o admin devolve o endereço derivado da chave mesmo sem TUN; use HasLocalIP
+// antes de fazer bind nesse IPv6.
 func (s *Service) SelfAddress() string {
 	info := s.AdminInfo()
 	if info == nil || info.Self == nil {
 		return ""
 	}
 	return info.Self.Address
+}
+
+// HasLocalIP indica se o IP está atribuído a alguma interface local (TUN no ar).
+func HasLocalIP(ipStr string) bool {
+	want := net.ParseIP(strings.TrimSpace(ipStr))
+	if want == nil {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil && ip.Equal(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// SelfAddressReady devolve o IPv6 Ygg só quando o TUN o atribuiu à interface.
+func (s *Service) SelfAddressReady() string {
+	ip := s.SelfAddress()
+	if ip == "" || !HasLocalIP(ip) {
+		return ""
+	}
+	return ip
+}
+
+// PeerAddresses devolve IPv6 Ygg dos peers mesh com sessão up.
+func (s *Service) PeerAddresses() []string {
+	info := s.AdminInfo()
+	if info == nil {
+		return nil
+	}
+	out := make([]string, 0, len(info.Peers))
+	seen := map[string]bool{}
+	for _, p := range info.Peers {
+		ip := strings.TrimSpace(p.Address)
+		if ip == "" {
+			continue
+		}
+		if i := strings.IndexByte(ip, '/'); i >= 0 {
+			ip = ip[:i]
+		}
+		if seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, ip)
+	}
+	return out
 }

@@ -35,7 +35,7 @@
 }
 
 #buscalogo-agent-chip a,
-#buscalogo-agent-chip button {
+#buscalogo-agent-chip button.bl-add {
   font: inherit;
   cursor: pointer;
   border: none;
@@ -46,11 +46,29 @@
   text-decoration: none;
 }
 
-#buscalogo-agent-chip.bl-suggest button {
+#buscalogo-agent-chip.bl-suggest button.bl-add {
   background: #e65100;
 }
 
 #buscalogo-agent-chip a:hover,
-#buscalogo-agent-chip button:hover {
+#buscalogo-agent-chip button.bl-add:hover {
   opacity: 0.9;
+}
+
+#buscalogo-agent-chip button.bl-dismiss {
+  margin-left: 2px;
+  margin-right: -4px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: 18px/1 system-ui, sans-serif;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+#buscalogo-agent-chip button.bl-dismiss:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
 }

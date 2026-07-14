@@ -5,7 +5,6 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"image/png"
 	"math"
 	"os"
 	"os/exec"
@@ -343,11 +342,11 @@ func iconBytes(running bool) []byte {
 	if len(logo) > 0 {
 		if img, _, err := image.Decode(bytes.NewReader(logo)); err == nil {
 			scaled := resizeIcon(cropCenterSquare(img), iconSize)
-			return overlayStatusDot(scaled, running)
+			return encodeTrayIcon(overlayStatusDot(scaled, running))
 		}
 	}
-	// fallback: ícone gerado (B de BuscaLogo + status)
-	return generatedIcon(running)
+	// fallback: ícone gerado (status)
+	return encodeTrayIcon(generatedIcon(running))
 }
 
 // cropCenterSquare corta a região central quadrada da imagem (zoom no rosto/logo).
@@ -426,7 +425,7 @@ func lerp(c00, c10, c01, c11 uint8, dx, dy float64) uint8 {
 	return uint8(v)
 }
 
-func overlayStatusDot(src image.Image, running bool) []byte {
+func overlayStatusDot(src image.Image, running bool) *image.RGBA {
 	bounds := src.Bounds()
 	size := bounds.Dx()
 	img := image.NewRGBA(bounds)
@@ -467,12 +466,10 @@ func overlayStatusDot(src image.Image, running bool) []byte {
 			}
 		}
 	}
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
+	return img
 }
 
-func generatedIcon(running bool) []byte {
+func generatedIcon(running bool) *image.RGBA {
 	size := iconSize
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	bg := color.RGBA{0x17, 0x1a, 0x21, 0xff}
@@ -492,7 +489,5 @@ func generatedIcon(running bool) []byte {
 			}
 		}
 	}
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
+	return img
 }

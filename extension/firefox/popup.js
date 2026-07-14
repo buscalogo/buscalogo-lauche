@@ -9,6 +9,8 @@ const permHint = document.getElementById("perm-hint");
 
 const AGENT_ORIGINS = ["http://127.0.0.1:9970/*", "http://localhost:9970/*"];
 const AGENT_BASES = ["http://127.0.0.1:9970", "http://localhost:9970"];
+/** Pedido no popup (gesto do usuário); no background o navegador costuma negar. */
+const PAGE_ORIGINS = ["http://*/*", "https://*/*"];
 
 let currentUrl = "";
 
@@ -144,6 +146,27 @@ async function refresh() {
 
 pageAlertEl.addEventListener("change", async () => {
   const enabled = pageAlertEl.checked;
+
+  // permissions.request só funciona com gesto do usuário no popup.
+  if (enabled) {
+    let permitted = false;
+    try {
+      permitted = await chrome.permissions.contains({ origins: PAGE_ORIGINS });
+      if (!permitted) {
+        permitted = await chrome.permissions.request({ origins: PAGE_ORIGINS });
+      }
+    } catch (e) {
+      pageAlertEl.checked = false;
+      setPermHint(String(e.message || e) || "Não foi possível pedir permissão.");
+      return;
+    }
+    if (!permitted) {
+      pageAlertEl.checked = false;
+      setPermHint("Permissão negada pelo navegador.");
+      return;
+    }
+  }
+
   const res = await chrome.runtime.sendMessage({
     type: "BL_SET_PAGE_ALERT",
     enabled,
@@ -153,10 +176,10 @@ pageAlertEl.addEventListener("change", async () => {
     setPermHint(res?.message || "Não foi possível ativar o alerta nas páginas.");
     return;
   }
-  if (enabled && res?.permission) {
-    setPermHint("Alerta ativo. Recarregue abas já abertas para ver o chip.");
+  if (enabled && res?.ok) {
+    setPermHint("Alerta ativo nas páginas. Use × no chip para fechar sem sugerir.");
   } else if (!enabled) {
-    setPermHint("Alerta na página desligado. O popup e o badge continuam funcionando.");
+    setPermHint("Alerta na página desligado. O popup e o badge do ícone continuam.");
   } else {
     setPermHint("");
   }

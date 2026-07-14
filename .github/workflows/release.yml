@@ -4,13 +4,21 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version sem 'v' (ex.: 0.1.14). Vazio = ler VERSION."
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build-linux:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,15 +33,24 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot dpkg-dev curl imagemagick
+          sudo apt-get install -y fakeroot dpkg-dev curl imagemagick zip
           npm install -g @neutralinojs/neu
 
       - name: Neutralino client (neutralino.js não está no git)
         run: cd desktop/buscalogo-desktop && neu update
 
-      - name: Extract version from tag
+      - name: Resolve version
         id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(tr -d ' \n' < VERSION)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Using VERSION=$V"
 
       - name: Build assets and package
         run: |
@@ -51,6 +68,7 @@ jobs:
           DEB="dist/buscalogo-agent_${VERSION}_amd64.deb"
           SHA=$(sha256sum "$DEB" | awk '{print $1}')
           URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/buscalogo-agent_${VERSION}_amd64.deb"
+          MSI_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/BuscaLogoAgent-${VERSION}-amd64.msi"
           cat > dist/manifest.json <<EOF
           {
             "version": "${VERSION}",
@@ -58,6 +76,10 @@ jobs:
               "url": "${URL}",
               "sha256": "${SHA}",
               "name": "buscalogo-agent_${VERSION}_amd64.deb"
+            },
+            "windows_amd64_msi": {
+              "url": "${MSI_URL}",
+              "name": "BuscaLogoAgent-${VERSION}-amd64.msi"
             }
           }
           EOF
@@ -71,18 +93,163 @@ jobs:
           (cd extension && zip -qr "../dist/buscalogo-agent-${VERSION}-firefox.zip" firefox -x 'firefox/.DS_Store')
           test -f "dist/buscalogo-agent-${VERSION}-chrome.zip"
           test -f "dist/buscalogo-agent-${VERSION}-firefox.zip"
-          # Também copia os zips embutidos no .deb (se existirem)
-          dpkg-deb -x "dist/buscalogo-agent_${VERSION}_amd64.deb" /tmp/bl-deb-check
-          test -f /tmp/bl-deb-check/opt/buscalogo/extension/chrome/manifest.json
-          test -f /tmp/bl-deb-check/opt/buscalogo/extension/firefox/manifest.json
-          ls -la /tmp/bl-deb-check/opt/buscalogo/extension/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb
+            dist/manifest.json
+            dist/buscalogo-agent-${{ steps.ver.outputs.version }}-chrome.zip
+            dist/buscalogo-agent-${{ steps.ver.outputs.version }}-firefox.zip
+
+  build-windows-msi:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(tr -d ' \n' < VERSION)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Using VERSION=$V"
+
+      - name: Install Neutralino + WiX
+        shell: bash
+        run: |
+          npm install -g @neutralinojs/neu
+          dotnet tool install --global wix --version 5.0.2
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Fetch Windows assets (ygg + coredns + wintun)
+        shell: bash
+        run: |
+          chmod +x scripts/fetch-windows-assets.sh
+          ./scripts/fetch-windows-assets.sh
+
+      - name: Desktop icons (copy logo)
+        shell: pwsh
+        run: |
+          $icons = "desktop/buscalogo-desktop/resources/icons"
+          New-Item -Force -ItemType Directory $icons | Out-Null
+          Copy-Item assets/icons/logo.png "$icons/appIcon.png" -Force
+          Copy-Item assets/icons/logo.png "$icons/trayIcon.png" -Force
+          Copy-Item assets/icons/logo.png "$icons/systrayIcon.png" -Force
+          Copy-Item "$icons/systrayIcon.png" "desktop/buscalogo-desktop/trayIcon.png" -Force
+
+      - name: Neutralino update
+        shell: bash
+        run: cd desktop/buscalogo-desktop && neu update
+
+      - name: Build agent Windows + Neutralino shell
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          LDFLAGS="-X buscalogo-agent/internal/version.Version=${VERSION} -X buscalogo-agent/internal/version.Commit=${SHORT_SHA}"
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/buscalogo-agent.exe ./cmd/agent
+          cp -f dist/buscalogo-agent.exe desktop/buscalogo-desktop/buscalogo-agentd.exe
+          (cd desktop/buscalogo-desktop && neu build --release)
+          mkdir -p dist/msi-stage
+          cp -f desktop/buscalogo-desktop/dist/buscalogo-agent/buscalogo-agent-win_x64.exe dist/msi-stage/buscalogo-agent.exe
+          cp -f desktop/buscalogo-desktop/dist/buscalogo-agent/resources.neu dist/msi-stage/
+          cp -f dist/buscalogo-agent.exe dist/msi-stage/buscalogo-agentd.exe
+          cp -f desktop/buscalogo-desktop/resources/icons/systrayIcon.png dist/msi-stage/trayIcon.png
+          cp -f assets/windows/wintun.dll dist/msi-stage/wintun.dll
+          ls -la dist/msi-stage/
+
+      - name: Build MSI (WiX)
+        shell: pwsh
+        run: |
+          .\packaging\windows\build.ps1 -Version "${{ steps.ver.outputs.version }}"
+          if (-not (Test-Path "dist\BuscaLogoAgent-${{ steps.ver.outputs.version }}-amd64.msi")) {
+            throw "MSI not produced"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: dist/BuscaLogoAgent-${{ steps.ver.outputs.version }}-amd64.msi
+
+  release:
+    needs: [build-linux, build-windows-msi]
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: dist
+
+      - name: Download Windows MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-msi
+          path: dist
+
+      - name: Compute MSI sha256
+        id: msi
+        run: |
+          VERSION="${{ needs.build-linux.outputs.version }}"
+          SHA=$(sha256sum "dist/BuscaLogoAgent-${VERSION}-amd64.msi" | awk '{print $1}')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Write manifest with MSI sha256
+        env:
+          VERSION: ${{ needs.build-linux.outputs.version }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.msi.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          version = os.environ["VERSION"]
+          sha = os.environ["SHA"]
+          repo = os.environ["REPO"]
+          path = "dist/manifest.json"
+          with open(path) as f:
+              m = json.load(f)
+          m["windows_amd64_msi"] = {
+              "url": f"https://github.com/{repo}/releases/download/v{version}/BuscaLogoAgent-{version}-amd64.msi",
+              "sha256": sha,
+              "name": f"BuscaLogoAgent-{version}-amd64.msi",
+          }
+          with open(path, "w") as f:
+              json.dump(m, f, indent=2)
+              f.write("\n")
+          print(open(path).read())
+          PY
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb
+            dist/buscalogo-agent_${{ needs.build-linux.outputs.version }}_amd64.deb
+            dist/BuscaLogoAgent-${{ needs.build-linux.outputs.version }}-amd64.msi
             dist/manifest.json
-            dist/buscalogo-agent-${{ steps.ver.outputs.version }}-chrome.zip
-            dist/buscalogo-agent-${{ steps.ver.outputs.version }}-firefox.zip
+            dist/buscalogo-agent-${{ needs.build-linux.outputs.version }}-chrome.zip
+            dist/buscalogo-agent-${{ needs.build-linux.outputs.version }}-firefox.zip
           generate_release_notes: true
