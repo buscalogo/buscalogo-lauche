@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -75,7 +77,7 @@ func New(cfg *config.Config, buf *logx.Buffer, cdns *coredns.Service, y *yggdras
 	s.routes(mux)
 	s.srv = &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           s.hostGuard(s.corsLocal(mux)),
+		Handler:           s.hostGuard(s.corsLocal(s.mutationAuth(mux))),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return s
@@ -112,7 +114,7 @@ func (s *Server) corsLocal(next http.Handler) http.Handler {
 		if origin := r.Header.Get("Origin"); isAllowedCORSOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Vary", "Origin")
 		}
@@ -121,6 +123,86 @@ func (s *Server) corsLocal(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// apiExposed indica se a API escuta fora de loopback (VPS/registry).
+func (s *Server) apiExposed() bool {
+	listen := strings.TrimSpace(s.cfg.API.Listen)
+	if listen == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return strings.HasPrefix(listen, "0.0.0.0:") ||
+			strings.HasPrefix(listen, "[::]:") ||
+			strings.HasPrefix(listen, ":")
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		return true
+	case "127.0.0.1", "localhost", "::1":
+		return false
+	default:
+		return true
+	}
+}
+
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	const prefix = "Bearer "
+	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+		return strings.TrimSpace(h[len(prefix):])
+	}
+	return ""
+}
+
+func (s *Server) tokenOK(r *http.Request) bool {
+	tok := strings.TrimSpace(s.cfg.API.Token)
+	if tok == "" {
+		return false
+	}
+	got := bearerToken(r)
+	if len(got) != len(tok) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+}
+
+func (s *Server) mutationPublicPath(path string) bool {
+	switch path {
+	case "/api/account/login", "/api/account/register", "/api/account/import":
+		return true
+	default:
+		return false
+	}
+}
+
+// mutationAuth exige Bearer (api.token) ou sessão de conta para mutações
+// quando a API está exposta fora de loopback.
+func (s *Server) mutationAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.apiExposed() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.mutationPublicPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.tokenOK(r) || s.accountFromRequest(r) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeErr(w, http.StatusUnauthorized, "unauthorized: configure api.token ou faça login")
 	})
 }
 
@@ -333,7 +415,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		},
 		Systray:   tray.CheckEnvironment(),
 		Autostart: autostart.IsEnabled(),
-		Config:    s.cfg.Snapshot(),
+		Config:    s.cfg.PublicSnapshot(),
 		Network:   s.networkPortsSummary(actualPort, false),
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -1320,7 +1402,7 @@ func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.cfg.Snapshot())
+	writeJSON(w, http.StatusOK, s.cfg.PublicSnapshot())
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -1353,7 +1435,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": s.cfg.Snapshot()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": s.cfg.PublicSnapshot()})
 }
 
 func (s *Server) handleDNSEnable(w http.ResponseWriter, r *http.Request) {

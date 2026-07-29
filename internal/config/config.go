@@ -43,6 +43,10 @@ type Node struct {
 
 type API struct {
 	Listen string `yaml:"listen" json:"listen"`
+	// Token, se definido, autoriza mutações via Authorization: Bearer <token>
+	// (além da sessão de conta). Quando a API escuta fora de loopback, mutações
+	// exigem Bearer ou sessão — configure este campo no nó VPS/registry.
+	Token string `yaml:"token,omitempty" json:"token,omitempty"`
 }
 
 // Web é o servidor de hospedagem de sites (.bl).
@@ -588,6 +592,15 @@ func (c *Config) Snapshot() Data {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.snapshotLocked()
+}
+
+// PublicSnapshot é Snapshot sem segredos (ex.: api.token) para respostas HTTP.
+func (c *Config) PublicSnapshot() Data {
+	d := c.Snapshot()
+	if d.API.Token != "" {
+		d.API.Token = "***"
+	}
+	return d
 }
 
 func (c *Config) snapshotLocked() Data {
