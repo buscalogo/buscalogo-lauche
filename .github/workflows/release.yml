@@ -62,12 +62,42 @@ jobs:
         env:
           DEB_CODENAME: jammy
 
+      - name: Build registry binaries (amd64 + arm64)
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          LDFLAGS="-X buscalogo-agent/internal/version.Version=${VERSION} -X buscalogo-agent/internal/version.Commit=${SHORT_SHA}"
+          mkdir -p dist
+
+          # amd64 — assets já baixados pelo make assets (deb)
+          go build -tags registry -ldflags "$LDFLAGS" \
+            -o "dist/buscalogo-registry_${VERSION}_linux_amd64" ./cmd/registry
+          chmod +x "dist/buscalogo-registry_${VERSION}_linux_amd64"
+
+          # arm64 — troca ygg/coredns embutidos e cross-compila
+          make assets ASSET_ARCH=arm64
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags registry -ldflags "$LDFLAGS" \
+            -o "dist/buscalogo-registry_${VERSION}_linux_arm64" ./cmd/registry
+          chmod +x "dist/buscalogo-registry_${VERSION}_linux_arm64"
+
+          # restaura assets amd64 (árvore limpa)
+          make assets ASSET_ARCH=amd64
+
+          ls -lh dist/buscalogo-registry_${VERSION}_linux_*
+          file dist/buscalogo-registry_${VERSION}_linux_*
+
       - name: Generate manifest.json
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           DEB="dist/buscalogo-agent_${VERSION}_amd64.deb"
+          REG_AMD="dist/buscalogo-registry_${VERSION}_linux_amd64"
+          REG_ARM="dist/buscalogo-registry_${VERSION}_linux_arm64"
           SHA=$(sha256sum "$DEB" | awk '{print $1}')
+          REG_AMD_SHA=$(sha256sum "$REG_AMD" | awk '{print $1}')
+          REG_ARM_SHA=$(sha256sum "$REG_ARM" | awk '{print $1}')
           URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/buscalogo-agent_${VERSION}_amd64.deb"
+          REG_AMD_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/buscalogo-registry_${VERSION}_linux_amd64"
+          REG_ARM_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/buscalogo-registry_${VERSION}_linux_arm64"
           MSI_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/BuscaLogoAgent-${VERSION}-amd64.msi"
           cat > dist/manifest.json <<EOF
           {
@@ -76,6 +106,16 @@ jobs:
               "url": "${URL}",
               "sha256": "${SHA}",
               "name": "buscalogo-agent_${VERSION}_amd64.deb"
+            },
+            "linux_amd64_registry": {
+              "url": "${REG_AMD_URL}",
+              "sha256": "${REG_AMD_SHA}",
+              "name": "buscalogo-registry_${VERSION}_linux_amd64"
+            },
+            "linux_arm64_registry": {
+              "url": "${REG_ARM_URL}",
+              "sha256": "${REG_ARM_SHA}",
+              "name": "buscalogo-registry_${VERSION}_linux_arm64"
             },
             "windows_amd64_msi": {
               "url": "${MSI_URL}",
@@ -99,6 +139,8 @@ jobs:
           name: linux-release
           path: |
             dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb
+            dist/buscalogo-registry_${{ steps.ver.outputs.version }}_linux_amd64
+            dist/buscalogo-registry_${{ steps.ver.outputs.version }}_linux_arm64
             dist/manifest.json
             dist/buscalogo-agent-${{ steps.ver.outputs.version }}-chrome.zip
             dist/buscalogo-agent-${{ steps.ver.outputs.version }}-firefox.zip
@@ -248,6 +290,8 @@ jobs:
         with:
           files: |
             dist/buscalogo-agent_${{ needs.build-linux.outputs.version }}_amd64.deb
+            dist/buscalogo-registry_${{ needs.build-linux.outputs.version }}_linux_amd64
+            dist/buscalogo-registry_${{ needs.build-linux.outputs.version }}_linux_arm64
             dist/BuscaLogoAgent-${{ needs.build-linux.outputs.version }}-amd64.msi
             dist/manifest.json
             dist/buscalogo-agent-${{ needs.build-linux.outputs.version }}-chrome.zip

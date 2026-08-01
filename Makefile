@@ -7,8 +7,8 @@ LDFLAGS  := -X buscalogo-agent/internal/version.Version=$(VERSION) -X buscalogo-
 
 # IPv6 Ygg do registry público (opcional).
 # Override: make REGISTRY_YGG_IP=205:... build
-# Ou grave uma linha em ../registy/ygg.ip
-REGISTRY_DIR ?= ../registy
+# Ou grave uma linha em ../registry/ygg.ip
+REGISTRY_DIR ?= ../registry
 REGISTRY_YGG_IP ?= $(shell \
   if [ -f "$(REGISTRY_DIR)/ygg.ip" ]; then head -1 "$(REGISTRY_DIR)/ygg.ip" | tr -d '[] \n'; \
   elif [ -f "$(REGISTRY_DIR)/data/data/registry-bootstrap.txt" ]; then grep -E '^YGG_IP=' "$(REGISTRY_DIR)/data/data/registry-bootstrap.txt" | head -1 | cut -d= -f2- | tr -d '[] \n'; \
@@ -27,13 +27,15 @@ DEB_CODENAME ?= jammy
 COUCH_DEB_URL := https://apache.jfrog.io/artifactory/couchdb-deb/pool/C/CouchDB/couchdb_$(COUCH_VERSION)~$(DEB_CODENAME)_amd64.deb
 
 ASSETS_DIR := assets/linux
+# Arquitetura dos binários embutidos (ygg/coredns): amd64 | arm64
+ASSET_ARCH ?= amd64
 
 .PHONY: all build build-windows build-agent-registry assets assets-couchdb run test vet fmt clean tidy dist deb release desktop desktop-icons desktop-neutralino desktop-run desktop-build desktop-build-windows msi-stage msi
 
 all: build
 
 build:
-	@if [ -n "$(REGISTRY_YGG_IP)" ]; then echo ">> registry seed: $(REGISTRY_YGG_IP)"; else echo ">> registry seed: (nenhum — use ../registy/ygg.ip)"; fi
+	@if [ -n "$(REGISTRY_YGG_IP)" ]; then echo ">> registry seed: $(REGISTRY_YGG_IP)"; else echo ">> registry seed: (nenhum — use ../registry/ygg.ip)"; fi
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(APP) ./cmd/agent
 
 # Cross-compile Windows amd64 (não embute CouchDB). Baixa assets/windows se faltarem.
@@ -47,7 +49,7 @@ build-windows:
 	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/$(APP).exe ./cmd/agent
 	@echo ">> Windows: dist/$(APP).exe"
 
-# Atalho: Agent + seed do registry (via registy/scripts)
+# Atalho: Agent + seed do registry (via registry/scripts)
 build-agent-registry:
 	@$(REGISTRY_DIR)/scripts/build-agent.sh
 
@@ -116,18 +118,20 @@ deb: build desktop-icons desktop-neutralino
 	@dpkg-deb -c dist/$(APP)_$(VERSION)_amd64.deb | grep -E 'extension/.*/manifest.json' || (echo ">> ERRO: manifests ausentes no .deb"; exit 1)
 
 assets:
-	@echo ">> Baixando binários para $(ASSETS_DIR)/"
+	@echo ">> Baixando binários $(ASSET_ARCH) para $(ASSETS_DIR)/"
 	@mkdir -p $(ASSETS_DIR)
-	@echo "   yggdrasil v$(YGG_VERSION) (via .deb)"
-	@curl -sL -o /tmp/ygg.deb https://github.com/yggdrasil-network/yggdrasil-go/releases/download/v$(YGG_VERSION)/yggdrasil-$(YGG_VERSION)-amd64.deb
+	@echo "   yggdrasil v$(YGG_VERSION) (via .deb $(ASSET_ARCH))"
+	@curl -sL -o /tmp/ygg.deb https://github.com/yggdrasil-network/yggdrasil-go/releases/download/v$(YGG_VERSION)/yggdrasil-$(YGG_VERSION)-$(ASSET_ARCH).deb
 	@rm -rf /tmp/ygg_extract && dpkg-deb -x /tmp/ygg.deb /tmp/ygg_extract
 	@cp -f /tmp/ygg_extract/usr/bin/yggdrasil $(ASSETS_DIR)/yggdrasil
-	@echo "   coredns v$(DNS_VERSION)"
-	@curl -sL -o /tmp/coredns.tgz https://github.com/coredns/coredns/releases/download/v$(DNS_VERSION)/coredns_$(DNS_VERSION)_linux_amd64.tgz
+	@echo "   coredns v$(DNS_VERSION) (linux_$(ASSET_ARCH))"
+	@curl -sL -o /tmp/coredns.tgz https://github.com/coredns/coredns/releases/download/v$(DNS_VERSION)/coredns_$(DNS_VERSION)_linux_$(ASSET_ARCH).tgz
 	@tar -xzf /tmp/coredns.tgz -C $(ASSETS_DIR) coredns
 	@chmod +x $(ASSETS_DIR)/yggdrasil $(ASSETS_DIR)/coredns
-	@echo ">> Concluído:"
+	@echo "ASSET_ARCH=$(ASSET_ARCH)" > $(ASSETS_DIR)/MANIFEST
+	@echo ">> Concluído ($(ASSET_ARCH)):"
 	@ls -lh $(ASSETS_DIR)/yggdrasil $(ASSETS_DIR)/coredns
+	@file $(ASSETS_DIR)/yggdrasil $(ASSETS_DIR)/coredns || true
 
 assets-couchdb:
 	@echo ">> Baixando CouchDB v$(COUCH_VERSION) (~$(DEB_CODENAME)) para $(ASSETS_DIR)/couchdb/"
@@ -154,7 +158,7 @@ fmt:
 tidy:
 	$(GO) mod tidy
 
-# Publica release: make release BUMP=patch|minor|major|0.1.4
+# Publica release (Agent .deb + registry binário + extensões): make release BUMP=patch|minor|major|0.1.4
 BUMP ?= patch
 release:
 	@chmod +x scripts/release.sh

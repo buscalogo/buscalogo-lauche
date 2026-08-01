@@ -22,7 +22,7 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func verifyDeb(path, wantSHA string) error {
+func verifySHA256(path, wantSHA string) error {
 	wantSHA = strings.ToLower(strings.TrimSpace(wantSHA))
 	if wantSHA == "" {
 		return fmt.Errorf("manifest sem sha256 do pacote")
@@ -36,3 +36,6 @@ func verifyDeb(path, wantSHA string) error {
 	}
 	return nil
 }
+
+// verifyDeb é alias histórico.
+func verifyDeb(path, wantSHA string) error { return verifySHA256(path, wantSHA) }

@@ -51,7 +51,7 @@ type SyncResult struct {
 	Errors    []string `json:"errors,omitempty"`
 }
 
-// Service é o GossipSub de domínios .bl sobre Yggdrasil (não confundir com P2P de busca).
+// Service é o GossipSub de domínios .bl/.lo sobre Yggdrasil (não confundir com P2P de busca).
 type Service struct {
 	buf         *logx.Buffer
 	eng         *ledger.Engine
@@ -60,6 +60,15 @@ type Service struct {
 	yggPeers    YggPeersFn
 	staticPeers []string
 	priorityIPs map[string]bool
+
+	role             string
+	bootstrapURL     string
+	bootstrapOK      bool
+	bootstrapCount   int
+	peerHealth       PeerHealth
+	exchangeInterval time.Duration
+	syncCycle        int
+	lastPeerExchange time.Time
 
 	mu          sync.Mutex
 	cancel      context.CancelFunc
@@ -85,20 +94,118 @@ func New(eng *ledger.Engine, buf *logx.Buffer, topic string, port int) *Service 
 	if port == 0 {
 		port = 4401
 	}
-	return &Service{eng: eng, buf: buf, topic: topic, port: port, priorityIPs: map[string]bool{}}
+	return &Service{
+		eng:              eng,
+		buf:              buf,
+		topic:            topic,
+		port:             port,
+		priorityIPs:      map[string]bool{},
+		peerHealth:       DefaultPeerHealth(),
+		exchangeInterval: 30 * time.Second,
+	}
 }
 
 func (s *Service) SetYggPeersFn(fn YggPeersFn) { s.yggPeers = fn }
 
+// SetRole marca o nó (ex.: "registry") para hello/exchange da malha de seeds.
+func (s *Service) SetRole(role string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.role = strings.TrimSpace(role)
+}
+
+// Role devolve o papel atual.
+func (s *Service) Role() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role
+}
+
+// SetPeerHealth configura TTLs da tabela de registries.
+func (s *Service) SetPeerHealth(h PeerHealth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h.StaleAfter <= 0 {
+		h.StaleAfter = DefaultPeerHealth().StaleAfter
+	}
+	if h.OfflineAfter <= 0 {
+		h.OfflineAfter = DefaultPeerHealth().OfflineAfter
+	}
+	if h.PruneAfter <= 0 {
+		h.PruneAfter = DefaultPeerHealth().PruneAfter
+	}
+	s.peerHealth = h
+}
+
+// SetExchangeInterval intervalo mínimo entre exchanges de peers.
+func (s *Service) SetExchangeInterval(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	s.exchangeInterval = d
+}
+
+// SetBootstrapURL define a URL do JSON estático de registries.
+func (s *Service) SetBootstrapURL(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bootstrapURL = strings.TrimSpace(url)
+}
+
+// ApplyBootstrapHTTP busca registries.json e injeta candidatos (só falha soft).
+func (s *Service) ApplyBootstrapHTTP(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	url := s.bootstrapURL
+	h := s.peerHealth
+	s.mu.Unlock()
+	ips, err := FetchBootstrapRegistries(ctx, url)
+	if err != nil {
+		s.mu.Lock()
+		s.bootstrapOK = false
+		s.mu.Unlock()
+		return 0, err
+	}
+	s.mu.Lock()
+	s.bootstrapOK = url != "" && url != "off" && url != "-"
+	s.bootstrapCount = len(ips)
+	self := s.selfYgg
+	if s.priorityIPs == nil {
+		s.priorityIPs = map[string]bool{}
+	}
+	s.mu.Unlock()
+	for _, ip := range ips {
+		if ip == "" || ip == self {
+			continue
+		}
+		rememberRegistry(ip, "", SourceBootstrapHTTP, false, h)
+		s.mu.Lock()
+		s.priorityIPs[ip] = true
+		s.mu.Unlock()
+	}
+	return len(ips), nil
+}
+
+// ListRegistries devolve a tabela conhecida com status.
+func (s *Service) ListRegistries() []RegistryPeerInfo {
+	s.mu.Lock()
+	self := s.selfYgg
+	h := s.peerHealth
+	s.mu.Unlock()
+	return listRegistryPeerInfos(self, h)
+}
+
 // SetStaticPeers define IPv6 Ygg de Agents conhecidos (outra rede / bootstrap manual).
 func (s *Service) SetStaticPeers(ips []string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	out := make([]string, 0, len(ips))
 	seen := map[string]bool{}
 	if s.priorityIPs == nil {
 		s.priorityIPs = map[string]bool{}
 	}
+	role := s.role
+	h := s.peerHealth
 	for _, raw := range ips {
 		ip := normalizeYggIP(raw)
 		if ip == "" || seen[ip] {
@@ -109,9 +216,15 @@ func (s *Service) SetStaticPeers(ips []string) {
 		s.priorityIPs[ip] = true
 	}
 	s.staticPeers = out
+	s.mu.Unlock()
+	if role == RoleRegistry {
+		for _, ip := range out {
+			rememberRegistry(ip, "", SourceStatic, false, h)
+		}
+	}
 }
 
-// AddStaticPeer memoriza um Agent remoto.
+// AddStaticPeer memoriza um Agent/registry remoto.
 func (s *Service) AddStaticPeer(yggIP string) (string, error) {
 	ip := normalizeYggIP(yggIP)
 	if ip == "" {
@@ -119,11 +232,16 @@ func (s *Service) AddStaticPeer(yggIP string) (string, error) {
 	}
 	s.mu.Lock()
 	self := s.selfYgg
+	role := s.role
+	h := s.peerHealth
 	s.mu.Unlock()
 	if ip == self {
 		return "", fmt.Errorf("não pode adicionar o próprio endereço")
 	}
 	rememberAgent(ip, "", false)
+	if role == RoleRegistry {
+		rememberRegistry(ip, "", SourceStatic, false, h)
+	}
 	s.mu.Lock()
 	if s.priorityIPs == nil {
 		s.priorityIPs = map[string]bool{}
@@ -274,6 +392,7 @@ type helloMsg struct {
 	PeerID string   `json:"peer_id"`
 	Addrs  []string `json:"addrs"`
 	YggIP  string   `json:"ygg_ip"`
+	Role   string   `json:"role,omitempty"`
 }
 
 func (s *Service) serveDiscovery(ctx context.Context) {
@@ -301,6 +420,7 @@ func (s *Service) handleDiscoverConn(conn net.Conn) {
 	s.mu.Lock()
 	h := s.host
 	ygg := s.selfYgg
+	role := s.role
 	s.mu.Unlock()
 	if h == nil {
 		return
@@ -310,7 +430,7 @@ func (s *Service) handleDiscoverConn(conn net.Conn) {
 		addrs = append(addrs, a.String()+"/p2p/"+h.ID().String())
 	}
 	_ = json.NewEncoder(conn).Encode(helloMsg{
-		V: 1, PeerID: h.ID().String(), Addrs: addrs, YggIP: ygg,
+		V: 1, PeerID: h.ID().String(), Addrs: addrs, YggIP: ygg, Role: role,
 	})
 }
 
@@ -332,25 +452,30 @@ func (s *Service) candidateIPs() []string {
 	s.mu.Lock()
 	self := s.selfYgg
 	static := append([]string(nil), s.staticPeers...)
+	role := s.role
+	h := s.peerHealth
+	cycle := s.syncCycle
+	s.syncCycle++
 	s.mu.Unlock()
 	var ygg []string
 	if s.yggPeers != nil {
 		ygg = s.yggPeers()
 	}
 	known := knownAgentIPs(self)
+	var regOnline, regOffline []string
+	if role == RoleRegistry {
+		regOnline, regOffline = knownRegistryIPsByStatus(self, h, true, 4, cycle)
+	}
 	s.mu.Lock()
 	if s.priorityIPs == nil {
 		s.priorityIPs = map[string]bool{}
 	}
-	for _, ip := range known {
-		s.priorityIPs[ip] = true
-	}
-	for _, ip := range static {
+	for _, ip := range append(append(regOnline, regOffline...), append(known, static...)...) {
 		s.priorityIPs[ip] = true
 	}
 	s.mu.Unlock()
-	// Static + known primeiro (outra rede); seeds Ygg por último.
-	return mergeUniqueIPs(self, static, known, ygg)
+	// Registries online/stale → static → offline (backoff) → agents known → Ygg session peers.
+	return mergeUniqueIPs(self, regOnline, static, regOffline, known, ygg)
 }
 
 // SyncNow faz discovery paralelo + catch-up e espera terminar.
@@ -431,9 +556,16 @@ func (s *Service) SyncNow(ctx context.Context) SyncResult {
 		close(out)
 	}()
 
+	s.mu.Lock()
+	role := s.role
+	health := s.peerHealth
+	s.mu.Unlock()
 	pushedTotal := 0
 	for h := range out {
 		if h.err != nil {
+			if role == RoleRegistry {
+				markRegistryDialFailure(h.ip, health)
+			}
 			if !isBenignDialErr(h.err) {
 				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", h.ip, h.err))
 				if s.buf != nil {
@@ -446,6 +578,10 @@ func (s *Service) SyncNow(ctx context.Context) SyncResult {
 		res.Applied += h.pull
 		pushedTotal += h.push
 		rememberAgent(h.ip, h.pid.String(), true)
+		if role == RoleRegistry {
+			rememberRegistry(h.ip, h.pid.String(), SourceDiscover, true, health)
+			s.maybeExchangePeers(ctx, h.pid)
+		}
 		s.mu.Lock()
 		s.discovered++
 		s.mu.Unlock()
@@ -502,6 +638,15 @@ func (s *Service) discoverAndConnect(ctx context.Context, yggIP string) (peer.ID
 	pid, err := peer.Decode(hello.PeerID)
 	if err != nil {
 		return "", err
+	}
+	if hello.Role == RoleRegistry || s.Role() == RoleRegistry {
+		s.mu.Lock()
+		health := s.peerHealth
+		s.mu.Unlock()
+		src := SourceDiscover
+		if hello.Role == RoleRegistry {
+			rememberRegistry(yggIP, hello.PeerID, src, false, health)
+		}
 	}
 	if pid == h.ID() {
 		return pid, nil
@@ -632,14 +777,31 @@ func (s *Service) handleSyncStream(stream network.Stream) {
 	_ = stream.SetDeadline(time.Now().Add(30 * time.Second))
 	remote := stream.Conn().RemotePeer()
 	var req struct {
-		Cmd    string            `json:"cmd"`
-		Count  int               `json:"count"`
-		Events []json.RawMessage `json:"events"`
+		Cmd        string            `json:"cmd"`
+		Count      int               `json:"count"`
+		Events     []json.RawMessage `json:"events"`
+		Registries []knownRegistry   `json:"registries"`
 	}
 	if err := json.NewDecoder(stream).Decode(&req); err != nil {
 		return
 	}
 	switch req.Cmd {
+	case "peers":
+		s.mu.Lock()
+		self := s.selfYgg
+		h := s.peerHealth
+		role := s.role
+		s.mu.Unlock()
+		if role == RoleRegistry && len(req.Registries) > 0 {
+			n := mergeRegistryPeers(req.Registries, SourceExchange, self, h)
+			if s.buf != nil && n > 0 {
+				s.buf.Infof("p2pdomain", "peers merge ← %s: +%d", remote, n)
+			}
+		}
+		_ = json.NewEncoder(stream).Encode(map[string]any{
+			"cmd":        "peers_ok",
+			"registries": exportRegistriesForExchange(self, h),
+		})
 	case "pull":
 		evs, err := s.eng.ExportAllEvents()
 		if err != nil {
@@ -758,19 +920,67 @@ func (s *Service) Stop() error {
 	return nil
 }
 
+func (s *Service) maybeExchangePeers(ctx context.Context, pid peer.ID) {
+	s.mu.Lock()
+	if s.role != RoleRegistry || s.host == nil {
+		s.mu.Unlock()
+		return
+	}
+	self := s.selfYgg
+	h := s.peerHealth
+	host := s.host
+	s.lastPeerExchange = time.Now()
+	s.mu.Unlock()
+
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	stream, err := host.NewStream(cctx, pid, syncProtocol)
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+	local := exportRegistriesForExchange(self, h)
+	if err := json.NewEncoder(stream).Encode(map[string]any{
+		"cmd":        "peers",
+		"registries": local,
+	}); err != nil {
+		return
+	}
+	var resp struct {
+		Cmd        string          `json:"cmd"`
+		Registries []knownRegistry `json:"registries"`
+	}
+	if err := json.NewDecoder(stream).Decode(&resp); err != nil {
+		return
+	}
+	if resp.Cmd != "peers_ok" {
+		return
+	}
+	n := mergeRegistryPeers(resp.Registries, SourceExchange, self, h)
+	if s.buf != nil && n > 0 {
+		s.buf.Infof("p2pdomain", "peers exchange → %s: +%d novos", pid, n)
+	}
+}
+
 func (s *Service) Status() map[string]any {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	self := s.selfYgg
+	health := s.peerHealth
+	role := s.role
+	bootOK := s.bootstrapOK
+	bootN := s.bootstrapCount
+	bootURL := s.bootstrapURL
 	out := map[string]any{
-		"running":     s.host != nil,
-		"topic":       s.topic,
-		"port":        s.port,
-		"discover":    s.port + discoverPortOff,
-		"beacon":      s.port + beaconPortOff,
+		"running":      s.host != nil,
+		"topic":        s.topic,
+		"port":         s.port,
+		"discover":     s.port + discoverPortOff,
+		"beacon":       s.port + beaconPortOff,
 		"sync_events":  s.syncOK,
 		"serve_events": s.serveOK,
 		"discovered":   s.discovered,
 		"syncing":      s.syncing,
+		"role":         role,
 	}
 	if !s.lastSync.IsZero() {
 		out["last_sync"] = s.lastSync.Format(time.RFC3339)
@@ -787,9 +997,19 @@ func (s *Service) Status() map[string]any {
 		out["addrs"] = addrs
 		out["peers"] = len(s.host.Network().Peers())
 	}
-	known := knownAgentIPs(s.selfYgg)
-	out["known_agents"] = len(known)
 	out["static_peers"] = append([]string(nil), s.staticPeers...)
+	s.mu.Unlock()
+
+	known := knownAgentIPs(self)
+	out["known_agents"] = len(known)
+	online, stale, offline := registryStatusCounts(self, health)
+	out["known_registries"] = online + stale + offline
+	out["registries_online"] = online
+	out["registries_stale"] = stale
+	out["registries_offline"] = offline
+	out["bootstrap_url"] = bootURL
+	out["bootstrap_url_ok"] = bootOK
+	out["bootstrap_count"] = bootN
 	return out
 }
 

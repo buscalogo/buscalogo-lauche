@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Publica uma nova versão do BuscaLogo Agent no GitHub Releases.
+# Publica uma nova versão no GitHub Releases (Agent .deb + registry binário + extensions).
 # Uso: ./scripts/release.sh [patch|minor|major|X.Y.Z]
+# Ou:  make release BUMP=patch
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,6 +42,11 @@ TAG="v${NEW}"
 
 echo ">> Versão atual: $CUR"
 echo ">> Nova versão:  $NEW ($TAG)"
+echo ">> CI vai publicar:"
+echo "   - buscalogo-agent_${NEW}_amd64.deb (+ MSI / extensões)"
+echo "   - buscalogo-registry_${NEW}_linux_amd64  ← VPS x86_64"
+echo "   - buscalogo-registry_${NEW}_linux_arm64  ← Raspberry / Orange Pi (aarch64)"
+echo "   - manifest.json (deb + registry amd64/arm64)"
 
 # Bloqueia binários acidentais no commit
 if git ls-files --error-unmatch agent buscalogo-agent 2>/dev/null; then
@@ -76,21 +82,26 @@ git add VERSION
 git commit -m "$(cat <<EOF
 Release ${NEW}.
 
-Bump VERSION for GitHub Actions to build and publish buscalogo-agent_${NEW}_amd64.deb.
+Bump VERSION for GitHub Actions to build and publish:
+- buscalogo-agent_${NEW}_amd64.deb
+- buscalogo-registry_${NEW}_linux_amd64
+- buscalogo-registry_${NEW}_linux_arm64 (Pi / Orange Pi)
 EOF
 )"
 
-git tag -a "$TAG" -m "BuscaLogo Agent ${NEW}"
+git tag -a "$TAG" -m "BuscaLogo ${NEW} (agent + registry)"
 
 echo ""
 echo ">> Commit e tag criados."
 echo ">> Para publicar:"
-echo "   git push origin main"
+echo "   git push origin HEAD"
 echo "   git push origin ${TAG}"
+echo ""
+echo ">> Depois do Actions OK, registries com update.enabled=true atualizam sozinhos."
 echo ""
 read -r -p ">> Enviar agora para origin? [y/N] " push_now
 if [[ "${push_now:-}" =~ ^[yY]$ ]]; then
-  git push origin main
+  git push origin HEAD
   git push origin "$TAG"
   echo ">> Publicado. Acompanhe: https://github.com/buscalogo/buscalogo-lauche/actions"
 else

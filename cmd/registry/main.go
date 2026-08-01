@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/sites"
 	"buscalogo-agent/internal/store"
+	"buscalogo-agent/internal/update"
 	"buscalogo-agent/internal/yggdrasil"
 )
 
@@ -40,12 +42,12 @@ func main() {
 	}
 
 	buf := logx.NewBuffer(cfg.Cache.Size)
-	buf.SetEcho(true) // PM2 / stdout vê sync e rede
+	buf.SetEcho(true) // systemd/PM2/stdout vê sync e rede
 	log.Printf("BuscaLogo Registry Node (home=%s)", home)
 	buf.Infof("registry", "Registry Node iniciando (home=%s)", home)
 	buf.Infof("registry", "API: http://%s", cfg.API.Listen)
 	buf.Infof("registry", "modo: Ygg + ledger/gossip + sites + DNS (sem scraper/CouchDB/P2P busca)")
-	buf.Infof("registry", "logs: pm2 logs | curl http://%s/api/logs/recent?n=50 | SSE /api/logs/stream", cfg.API.Listen)
+	buf.Infof("registry", "logs: journalctl -u buscalogo-registry -f | pm2 logs | curl http://%s/api/logs/recent?n=50", cfg.API.Listen)
 
 	cdns := coredns.New(cfg, buf)
 	ygg := yggdrasil.New(cfg, buf)
@@ -80,13 +82,30 @@ func main() {
 		buf.Warnf("registry", "hosts: %v", err)
 	}
 	domainGossip = p2pdomain.New(ledgerEng, buf, cfg.Registry.GossipTopic, cfg.Registry.ListenPort)
+	domainGossip.SetRole(p2pdomain.RoleRegistry)
+	domainGossip.SetPeerHealth(p2pdomain.PeerHealth{
+		StaleAfter:   config.ParseDurationDefault(cfg.Registry.PeerStaleAfter, 5*time.Minute),
+		OfflineAfter: config.ParseDurationDefault(cfg.Registry.PeerOfflineAfter, time.Hour),
+		PruneAfter:   config.ParseDurationDefault(cfg.Registry.PeerPruneAfter, 24*time.Hour),
+	})
+	domainGossip.SetExchangeInterval(config.ParseDurationDefault(cfg.Registry.PeerExchangeInterval, 30*time.Second))
+	domainGossip.SetBootstrapURL(cfg.Registry.BootstrapURL)
 	domainGossip.SetYggPeersFn(func() []string {
 		return ygg.PeerAddresses()
 	})
 	domainGossip.SetStaticPeers(cfg.Registry.StaticPeers)
+	if n, err := domainGossip.ApplyBootstrapHTTP(context.Background()); err != nil {
+		buf.Warnf("registry", "bootstrap HTTP (%s): %v — usando static_peers / descoberta", cfg.Registry.BootstrapURL, err)
+	} else if n > 0 {
+		buf.Infof("registry", "bootstrap HTTP: %d registries de %s", n, cfg.Registry.BootstrapURL)
+	} else if strings.TrimSpace(cfg.Registry.BootstrapURL) != "" && cfg.Registry.BootstrapURL != "off" {
+		buf.Infof("registry", "bootstrap HTTP: lista vazia em %s — fallback rede", cfg.Registry.BootstrapURL)
+	}
 
-	// API completa com serviços opcionais nil (sem scraper/couch/account/p2p/update).
-	srv := api.New(cfg, buf, cdns, ygg, nil, nil, nil, nil, dnsMgr, sitesMgr, nil, ledgerEng, domainGossip)
+	updater := update.NewProduct(cfg, buf, update.ProductRegistry)
+	// API completa com serviços opcionais nil (sem scraper/couch/account/p2p).
+	srv := api.New(cfg, buf, cdns, ygg, nil, nil, nil, nil, dnsMgr, sitesMgr, updater, ledgerEng, domainGossip)
+	updater.StartBackground()
 
 	if err := sitesMgr.SyncHosts(); err != nil {
 		buf.Warnf("registry", "sites.hosts: %v", err)
@@ -182,9 +201,10 @@ func statusTicker(buf *logx.Buffer, ygg *yggdrasil.Service, gossip *p2pdomain.Se
 				domains = len(list)
 			}
 		}
-		buf.Infof("registry", "rede: ygg=%s peers=%v known=%v serve_events=%v sync_events=%v domains=%d last_serve=%v",
+		buf.Infof("registry", "rede: ygg=%s peers=%v known=%v registries=%v online=%v serve_events=%v sync_events=%v domains=%d last_serve=%v",
 			ip,
-			st["peers"], st["known_agents"], st["serve_events"], st["sync_events"],
+			st["peers"], st["known_agents"], st["known_registries"], st["registries_online"],
+			st["serve_events"], st["sync_events"],
 			domains, st["last_serve"])
 	}
 }

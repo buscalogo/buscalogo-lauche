@@ -64,26 +64,42 @@ func manifestFromRelease(rel *ghRelease) (*Manifest, error) {
 			return fetchManifest(a.BrowserDownloadURL)
 		}
 	}
-	// fallback: montar a partir do .deb no release
+	// fallback: montar a partir dos assets no release
 	var deb *ghAsset
+	regs := map[string]*ghAsset{} // arch → asset
 	for i := range rel.Assets {
-		if strings.HasSuffix(rel.Assets[i].Name, "_amd64.deb") {
+		n := rel.Assets[i].Name
+		if strings.HasSuffix(n, "_amd64.deb") && deb == nil {
 			deb = &rel.Assets[i]
-			break
+		}
+		if !strings.Contains(n, "buscalogo-registry") || strings.HasSuffix(n, ".deb") {
+			continue
+		}
+		switch {
+		case strings.Contains(n, "linux_arm64"):
+			regs["arm64"] = &rel.Assets[i]
+		case strings.Contains(n, "linux_amd64"):
+			regs["amd64"] = &rel.Assets[i]
 		}
 	}
-	if deb == nil {
-		return nil, fmt.Errorf("release %s sem manifest.json nem .deb amd64", rel.TagName)
+	if deb == nil && len(regs) == 0 {
+		return nil, fmt.Errorf("release %s sem manifest.json nem assets", rel.TagName)
 	}
 	ver := strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v")
-	return &Manifest{
+	m := &Manifest{
 		Version: ver,
 		Notes:   strings.TrimSpace(rel.Body),
-		LinuxAMD64Deb: debAsset{
-			URL:  deb.BrowserDownloadURL,
-			Name: deb.Name,
-		},
-	}, nil
+	}
+	if deb != nil {
+		m.LinuxAMD64Deb = debAsset{URL: deb.BrowserDownloadURL, Name: deb.Name}
+	}
+	if a := regs["amd64"]; a != nil {
+		m.LinuxAMD64Registry = debAsset{URL: a.BrowserDownloadURL, Name: a.Name}
+	}
+	if a := regs["arm64"]; a != nil {
+		m.LinuxARM64Registry = debAsset{URL: a.BrowserDownloadURL, Name: a.Name}
+	}
+	return m, nil
 }
 
 func fetchManifest(url string) (*Manifest, error) {

@@ -148,7 +148,15 @@ make fmt
 
 Releases are tagged `v*` and built by [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-**Release order (`.lo` / mesh):** ship the **Agent** first; **Dpanel** bundles the Agent binary — only release Dpanel after an Agent tag with `.bl`/`.lo` support is available.
+```bash
+make release              # patch
+make release BUMP=minor
+make release BUMP=0.2.0
+```
+
+The script pushes commit + tag; Actions publishes the **Agent** (`.deb`/MSI) and the **registry** binaries (`linux_amd64` + `linux_arm64` in `manifest.json`). Nodes with `update.enabled: true` (systemd or PM2) self-update.
+
+**Release order (`.lo` / mesh):** ship **Agent/registry** (this repo) first; **Dpanel** bundles the Agent binary — only release Dpanel after a tag with `.bl`/`.lo` support is available.
 
 ## Related repos
 

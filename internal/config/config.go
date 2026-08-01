@@ -95,7 +95,7 @@ type Yggdrasil struct {
 	DnsServers     []string `yaml:"dns_servers" json:"dns_servers"` // resolvedores DNS na rede Yggdrasil
 }
 
-// Registry é o ledger .bl (Badger/SQLite + GossipSub sobre Ygg).
+// Registry é o ledger .bl/.lo (Badger/SQLite + GossipSub sobre Ygg).
 type Registry struct {
 	Enabled        *bool    `yaml:"enabled" json:"enabled"`
 	Engine         string   `yaml:"engine" json:"engine"` // badger | sqlite
@@ -103,8 +103,16 @@ type Registry struct {
 	GossipTopic    string   `yaml:"gossip_topic" json:"gossip_topic"`
 	ListenPort     int      `yaml:"listen_port" json:"listen_port"`
 	BootstrapPeers []string `yaml:"bootstrap_peers" json:"bootstrap_peers"`
-	// StaticPeers são IPv6 Ygg de outros Agents (funciona entre redes diferentes).
+	// StaticPeers são IPv6 Ygg de outros Agents/registries (outra rede / bootstrap manual).
 	StaticPeers []string `yaml:"static_peers" json:"static_peers"`
+	// BootstrapURL — JSON estático com IPs de registries (ex.: https://buscalogo.com/registries.json).
+	// Vazio desliga o fetch. No nó registry, ApplyRegistryNodeDefaults define o default do site.
+	BootstrapURL string `yaml:"bootstrap_url" json:"bootstrap_url"`
+	// TTLs da malha de registries (Go duration, ex.: 5m, 1h, 24h).
+	PeerStaleAfter       string `yaml:"peer_stale_after" json:"peer_stale_after"`
+	PeerOfflineAfter     string `yaml:"peer_offline_after" json:"peer_offline_after"`
+	PeerPruneAfter       string `yaml:"peer_prune_after" json:"peer_prune_after"`
+	PeerExchangeInterval string `yaml:"peer_exchange_interval" json:"peer_exchange_interval"`
 }
 
 func (r Registry) EnabledOrDefault() bool {
@@ -430,6 +438,8 @@ func (c *Config) applyDefaults() {
 // Agents usam este IPv6 como static peer quando registry.static_peers está vazio.
 var DefaultRegistryYggIP = "200:63ac:4c32:e7f3:4db2:9c6e:6f3d:d088"
 
+const DefaultRegistryBootstrapURL = "https://buscalogo.com/registries.json"
+
 func applyRegistryDefaults(r *Registry) {
 	if r.Engine == "" {
 		r.Engine = "badger"
@@ -439,6 +449,18 @@ func applyRegistryDefaults(r *Registry) {
 	}
 	if r.ListenPort == 0 {
 		r.ListenPort = 4401
+	}
+	if r.PeerStaleAfter == "" {
+		r.PeerStaleAfter = "5m"
+	}
+	if r.PeerOfflineAfter == "" {
+		r.PeerOfflineAfter = "1h"
+	}
+	if r.PeerPruneAfter == "" {
+		r.PeerPruneAfter = "24h"
+	}
+	if r.PeerExchangeInterval == "" {
+		r.PeerExchangeInterval = "30s"
 	}
 	// Bootstrap compile-time: só injeta se o usuário ainda não configurou peers.
 	if len(r.StaticPeers) == 0 && strings.TrimSpace(DefaultRegistryYggIP) != "" {
@@ -474,7 +496,20 @@ func (c *Config) ApplyRegistryNodeDefaults() error {
 	if c.Node.Name == "" || c.Node.Name == "buscalogo" {
 		c.Node.Name = "buscalogo-registry"
 	}
-	c.Update.Enabled = &falseV
+	// Bootstrap HTTP padrão do site (desligar: bootstrap_url: "off").
+	if strings.TrimSpace(c.Registry.BootstrapURL) == "" {
+		c.Registry.BootstrapURL = DefaultRegistryBootstrapURL
+	}
+	// Auto-update do binário via GitHub Releases (desligar: update.enabled: false).
+	if c.Update.Enabled == nil {
+		c.Update.Enabled = &trueV
+	}
+	if c.Update.CheckIntervalHours <= 0 {
+		c.Update.CheckIntervalHours = 6
+	}
+	if strings.TrimSpace(c.Update.GitHubRepo) == "" {
+		c.Update.GitHubRepo = "buscalogo/buscalogo-lauche"
+	}
 	applyRegistryDefaults(&c.Registry)
 	return nil
 }

@@ -50,7 +50,14 @@ func (s *Server) handleRegistryStatus(w http.ResponseWriter, r *http.Request) {
 		"topic":   s.cfg.Registry.GossipTopic,
 	}
 	if s.p2pdomain != nil {
-		out["gossip"] = s.p2pdomain.Status()
+		st := s.p2pdomain.Status()
+		out["gossip"] = st
+		out["known_registries"] = st["known_registries"]
+		out["registries_online"] = st["registries_online"]
+		out["registries_stale"] = st["registries_stale"]
+		out["registries_offline"] = st["registries_offline"]
+		out["bootstrap_url_ok"] = st["bootstrap_url_ok"]
+		out["bootstrap_url"] = st["bootstrap_url"]
 	}
 	if s.ygg != nil {
 		out["ygg_ip"] = s.ygg.SelfAddress()
@@ -70,8 +77,9 @@ func (s *Server) handleRegistryBootstrap(w http.ResponseWriter, r *http.Request)
 		"discover_port": s.cfg.Registry.ListenPort + 1,
 		"libp2p_port":   s.cfg.Registry.ListenPort,
 		"topic":         s.cfg.Registry.GossipTopic,
-		"hint":          "Nos Agents: registry.static_peers=[ygg_ip] ou compile com -X ...DefaultRegistryYggIP=<ygg_ip>",
+		"hint":          "Nos Agents: registry.static_peers=[ygg_ip] ou compile com -X ...DefaultRegistryYggIP=<ygg_ip>; registries também leem https://buscalogo.com/registries.json",
 	}
+	var onlinePeers []map[string]string
 	if s.p2pdomain != nil {
 		st := s.p2pdomain.Status()
 		out["gossip"] = st
@@ -80,12 +88,45 @@ func (s *Server) handleRegistryBootstrap(w http.ResponseWriter, r *http.Request)
 				out["peer_id"] = id
 			}
 		}
+		for _, p := range s.p2pdomain.ListRegistries() {
+			if p.Status != "online" {
+				continue
+			}
+			onlinePeers = append(onlinePeers, map[string]string{
+				"ygg_ip": p.YggIP,
+				"status": p.Status,
+			})
+			if len(onlinePeers) >= 16 {
+				break
+			}
+		}
 	}
+	out["registries"] = onlinePeers
 	if yggIP == "" {
 		out["ok"] = false
 		out["error"] = "Ygg IPv6 ainda indisponível"
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleRegistryListPeers(w http.ResponseWriter, r *http.Request) {
+	if s.p2pdomain == nil {
+		writeErr(w, http.StatusServiceUnavailable, "gossip desabilitado")
+		return
+	}
+	peers := s.p2pdomain.ListRegistries()
+	st := s.p2pdomain.Status()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"registries":         peers,
+		"known_registries":   st["known_registries"],
+		"registries_online":  st["registries_online"],
+		"registries_stale":   st["registries_stale"],
+		"registries_offline": st["registries_offline"],
+		"bootstrap_url":      st["bootstrap_url"],
+		"bootstrap_url_ok":   st["bootstrap_url_ok"],
+		"role":               st["role"],
+	})
 }
 
 func (s *Server) handleRegistrySync(w http.ResponseWriter, r *http.Request) {
@@ -140,15 +181,16 @@ func (s *Server) handleRegistryAddPeer(w http.ResponseWriter, r *http.Request) {
 
 	res := s.p2pdomain.SyncNow(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"message":   "peer remoto adicionado",
-		"ygg_ip":    ip,
-		"tried":     res.Tried,
-		"connected": res.Connected,
-		"applied":   res.Applied,
-		"peers":     res.Peers,
-		"errors":    res.Errors,
-		"gossip":    s.p2pdomain.Status(),
+		"ok":         true,
+		"message":    "peer remoto adicionado",
+		"ygg_ip":     ip,
+		"tried":      res.Tried,
+		"connected":  res.Connected,
+		"applied":    res.Applied,
+		"peers":      res.Peers,
+		"errors":     res.Errors,
+		"gossip":     s.p2pdomain.Status(),
+		"registries": s.p2pdomain.ListRegistries(),
 	})
 }
 
