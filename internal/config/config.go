@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"buscalogo-agent/internal/ledger"
 	"buscalogo-agent/internal/paths"
 	"gopkg.in/yaml.v3"
 )
@@ -82,7 +83,7 @@ type DNS struct {
 	Listen        string   `yaml:"listen" json:"listen"`
 	Port          int      `yaml:"port" json:"port"`
 	Upstream      []string `yaml:"upstream" json:"upstream"`
-	SearchDomains []string `yaml:"search_domains" json:"search_domains"` // TLDs do BuscaLogo (ex: bl)
+	SearchDomains []string `yaml:"search_domains" json:"search_domains"` // TLDs do BuscaLogo (ex: bl, lo)
 	ExternalListen bool   `yaml:"external_listen" json:"external_listen"` // escutar em todas as interfaces (inclui Yggdrasil)
 }
 
@@ -241,7 +242,7 @@ func Default() *Config {
 			Listen:        "127.0.0.1",
 			Port:          5333,
 			Upstream:      []string{"1.1.1.1", "8.8.8.8"},
-			SearchDomains: []string{"bl"},
+			SearchDomains:  ledger.DefaultSearchDomains(),
 			ExternalListen: false,
 		},
 		Yggdrasil: Yggdrasil{
@@ -371,7 +372,18 @@ func (c *Config) applyDefaults() {
 		c.DNS.Upstream = []string{"1.1.1.1", "8.8.8.8"}
 	}
 	if len(c.DNS.SearchDomains) == 0 {
-		c.DNS.SearchDomains = []string{"bl"}
+		c.DNS.SearchDomains = ledger.DefaultSearchDomains()
+	} else {
+		// Upgrades: garante todos os AllowedTLDs (ex.: .lo) na mesma mesh.
+		have := map[string]bool{}
+		for _, d := range c.DNS.SearchDomains {
+			have[strings.ToLower(strings.TrimSpace(d))] = true
+		}
+		for _, t := range ledger.AllowedTLDs {
+			if !have[t] {
+				c.DNS.SearchDomains = append(c.DNS.SearchDomains, t)
+			}
+		}
 	}
 	if c.Yggdrasil.Mode == "" {
 		c.Yggdrasil.Mode = "own"

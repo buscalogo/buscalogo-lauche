@@ -363,11 +363,11 @@ async function fetchDNSStatus() {
     const hint = $("#dns-hint");
     if (d.dns_mode === "local") {
       hint.textContent = win
-        ? "Modo A: CoreDNS em 127.0.0.1:5333. Ative o Modo B (como Administrador) para o Windows resolver *.bl via NRPT + :53."
-        : "Modo A: coredns em 127.0.0.1:5333 (sem root). Ative o Modo B para resolver .bl em todo o sistema via :53.";
+        ? "Modo A: CoreDNS em 127.0.0.1:5333. Ative o Modo B (como Administrador) para o Windows resolver *.bl/*.lo via NRPT + :53."
+        : "Modo A: coredns em 127.0.0.1:5333 (sem root). Ative o Modo B para resolver .bl/.lo em todo o sistema via :53.";
     } else {
       hint.textContent = win
-        ? "Modo B ativo: CoreDNS em 127.0.0.1:53 + NRPT (.bl \u2192 127.0.0.1). Teste: nslookup algo.bl 127.0.0.1"
+        ? "Modo B ativo: CoreDNS em 127.0.0.1:53 + NRPT (.bl/.lo \u2192 127.0.0.1). Teste: nslookup algo.bl 127.0.0.1"
         : "Modo B ativo: coredns em 127.0.0.1:53 + resolvedor integrado. Revers\u00edvel a qualquer momento.";
     }
     $("#dns-enable").disabled = d.dns_mode === "system";
@@ -1716,7 +1716,7 @@ async function registryRegister() {
   const domain = $("#registry-domain")?.value?.trim();
   const msg = $("#registry-msg");
   if (msg) { msg.style.display = "none"; msg.textContent = ""; msg.style.color = ""; }
-  if (!domain) { toast("Informe o domínio .bl"); return; }
+  if (!domain) { toast("Informe o domínio .bl ou .lo"); return; }
   try {
     const r = await fetch("/api/registry/register", {
       method: "POST",
@@ -1876,7 +1876,7 @@ async function doDNS(action) {
   const win = /win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "");
   if (!confirm(action === "enable-system"
     ? (win
-      ? "Ativar DNS no sistema (Windows)? O Agent precisa estar como Administrador: CoreDNS na porta 53 + regra NRPT para .bl."
+      ? "Ativar DNS no sistema (Windows)? O Agent precisa estar como Administrador: CoreDNS na porta 53 + regra NRPT para .bl/.lo."
       : "Ativar DNS no sistema? Ser\u00e1 pedida senha (root) para: setcap no coredns e integra\u00e7\u00e3o do resolvedor.")
     : "Desativar DNS do sistema e restaurar configura\u00e7\u00e3o original?")) return;
   btn.disabled = true;

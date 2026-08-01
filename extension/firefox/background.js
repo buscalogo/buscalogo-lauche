@@ -3,12 +3,13 @@ const LOOPBACK_ORIGINS = [
   "http://127.0.0.1:9970/*",
   "http://localhost:9970/*",
 ];
-const BL_ORIGINS = ["http://*.bl/*"];
+const BL_ORIGINS = ["http://*.bl/*", "http://*.lo/*"];
 const AGENT_ORIGINS = [...LOOPBACK_ORIGINS, ...BL_ORIGINS];
 const AGENT_CANDIDATES = [
   "http://127.0.0.1:9970",
   "http://localhost:9970",
   "http://buscalogo.bl/__buscalogo_agent__",
+  "http://buscalogo.lo/__buscalogo_agent__",
 ];
 const SCRIPT_ID = "buscalogo-page-alert";
 const PAGE_ORIGINS = ["http://*/*", "https://*/*"];
@@ -25,7 +26,7 @@ function isHttpUrl(url) {
 }
 
 function isBlHost(hostname) {
-  return typeof hostname === "string" && /\.bl$/i.test(hostname);
+  return typeof hostname === "string" && /\.(bl|lo)$/i.test(hostname);
 }
 
 async function getSettings() {
@@ -202,13 +203,13 @@ function buildFetchOptions(options = {}) {
 }
 
 async function rawFetch(base, path, options = {}) {
-  // Nunca usar https://*.bl — o Agent só escuta HTTP :80.
-  if (/^https:\/\/[^/]+\.bl\b/i.test(base)) {
+  // Nunca usar https://*.bl|*.lo — o Agent só escuta HTTP :80.
+  if (/^https:\/\/[^/]+\.(bl|lo)\b/i.test(base)) {
     base = base.replace(/^https:/i, "http:");
   }
   const fetchOpts = buildFetchOptions(options);
-  // Proxy em *.bl não é loopback “direto” do ponto de vista do documento .bl
-  if (base.includes("/__buscalogo_agent__") || /\.bl(?::\d+)?$/i.test(new URL(base, "http://x").hostname || "")) {
+  // Proxy em *.bl/*.lo não é loopback “direto” do ponto de vista do documento mesh
+  if (base.includes("/__buscalogo_agent__") || /\.(bl|lo)(?::\d+)?$/i.test(new URL(base, "http://x").hostname || "")) {
     delete fetchOpts.targetAddressSpace;
   }
   const ctrl = new AbortController();
@@ -294,7 +295,7 @@ async function lookupUrl(url, fetchOpts = {}) {
       indexed: false,
       need_agent_permission: !hasHost,
       error: hasHost
-        ? "Não foi possível conectar ao Agent. No Firefox, use um site .bl (proxy local) ou permita acesso a 127.0.0.1."
+        ? "Não foi possível conectar ao Agent. No Firefox, use um site .bl/.lo (proxy local) ou permita acesso a 127.0.0.1."
         : "Sem permissão para acessar o Agent local. Clique em “Permitir Agent local”.",
     };
   }

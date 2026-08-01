@@ -53,7 +53,7 @@ Publicada: https://chromewebstore.google.com/detail/buscalogo-agent/gecmkbanhikg
 > Registra e remove o content script do chip de status sob demanda, quando o usuário ativa ou desativa “Alerta na página”. Também injeta o script nas abas já abertas ao religar o alerta. Não executa código remoto nem altera o conteúdo das páginas além do chip da extensão.
 
 **Permissão do host**  
-> A extensão se comunica apenas com o BuscaLogo Agent na máquina do usuário (http://127.0.0.1:9970, http://localhost:9970 e http://*.bl) para lookup e sugestão de indexação. Os padrões http://*/* e https://*/* são opcionais e só mostram o chip de status na página quando o usuário liga o alerta; o conteúdo da página não é enviado à nuvem.
+> A extensão se comunica apenas com o BuscaLogo Agent na máquina do usuário (http://127.0.0.1:9970, http://localhost:9970, http://*.bl e http://*.lo) para lookup e sugestão de indexação. Os padrões http://*/* e https://*/* são opcionais e só mostram o chip de status na página quando o usuário liga o alerta; o conteúdo da página não é enviado à nuvem.
 
 **Código remoto?**  
 > Não, não estou usando Código remoto.

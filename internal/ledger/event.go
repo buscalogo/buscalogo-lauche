@@ -21,7 +21,11 @@ const (
 	DefaultTTL     = 300
 )
 
-var domainRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.bl$`)
+// AllowedTLDs são as extensões de domínio da mesh BuscaLogo (mesma rede/ledger).
+// Fonte da verdade para ValidDomain, DoH, CORS e search_domains.
+var AllowedTLDs = []string{"bl", "lo"}
+
+var domainLabelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // Records são os RRsets publicados.
 type Records struct {
@@ -60,8 +64,55 @@ func NormalizeDomain(domain string) string {
 	return strings.ToLower(strings.TrimSpace(domain))
 }
 
+// DefaultSearchDomains devolve os TLDs para dns.search_domains.
+func DefaultSearchDomains() []string {
+	out := make([]string, len(AllowedTLDs))
+	copy(out, AllowedTLDs)
+	return out
+}
+
+// DomainHint descreve o formato aceito (ex.: "nome.bl ou nome.lo").
+func DomainHint() string {
+	parts := make([]string, 0, len(AllowedTLDs))
+	for _, t := range AllowedTLDs {
+		parts = append(parts, "nome."+t)
+	}
+	return strings.Join(parts, " ou ")
+}
+
+// HasAllowedTLD indica se host termina com um TLD permitido (.bl / .lo).
+func HasAllowedTLD(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimSuffix(host, ".")
+	for _, t := range AllowedTLDs {
+		if host == t || strings.HasSuffix(host, "."+t) {
+			return true
+		}
+	}
+	return false
+}
+
 func ValidDomain(domain string) bool {
-	return domainRe.MatchString(NormalizeDomain(domain))
+	domain = NormalizeDomain(domain)
+	dot := strings.LastIndex(domain, ".")
+	if dot <= 0 || dot == len(domain)-1 {
+		return false
+	}
+	label, tld := domain[:dot], domain[dot+1:]
+	if strings.Contains(label, ".") {
+		return false // só um label + TLD (ex.: receitas.bl)
+	}
+	okTLD := false
+	for _, t := range AllowedTLDs {
+		if tld == t {
+			okTLD = true
+			break
+		}
+	}
+	if !okTLD {
+		return false
+	}
+	return domainLabelRe.MatchString(label)
 }
 
 func (e *DomainEvent) CanonicalPayload() []byte {

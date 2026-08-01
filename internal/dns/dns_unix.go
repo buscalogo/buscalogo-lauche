@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"buscalogo-agent/internal/config"
+	"buscalogo-agent/internal/ledger"
 	"buscalogo-agent/internal/paths"
 	"buscalogo-agent/internal/system"
 )
@@ -168,7 +169,7 @@ func (m *Manager) DisableSystem() error {
 func (m *Manager) integrateResolver(w interface{ Write([]byte) (int, error) }, info SystemInfo) error {
 	tlds := m.cfg.DNS.SearchDomains
 	if len(tlds) == 0 {
-		tlds = []string{"bl"}
+		tlds = ledger.DefaultSearchDomains()
 	}
 	var domains []string
 	for _, t := range tlds {

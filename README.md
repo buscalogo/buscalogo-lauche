@@ -2,14 +2,14 @@
 
 **Languages:** [English](README.md) · [Português](README.pt.md) · [Español](README.es.md) · [日本語](README.ja.md)
 
-Local daemon for the [BuscaLogo](https://buscalogo.com) decentralized search network. One Go binary manages mesh networking, DNS for `.bl` sites, scraping, storage, P2P search, a web control panel, and optional desktop/browser integration.
+Local daemon for the [BuscaLogo](https://buscalogo.com) decentralized search network. One Go binary manages mesh networking, DNS for `.bl` / `.lo` sites, scraping, storage, P2P search, a web control panel, and optional desktop/browser integration.
 
 ## What it does
 
 | Component | Role |
 |-----------|------|
 | **Yggdrasil** | Mesh overlay network (peers + IPv6) |
-| **CoreDNS** | Resolves `.bl` (and related) domains locally |
+| **CoreDNS** | Resolves `.bl` / `.lo` domains locally |
 | **CouchDB** | Stores scrapes, users, and config |
 | **Scraper** | Native Go crawler; indexes pages into CouchDB |
 | **P2P search** | Queries other Agents via signaling |
@@ -102,7 +102,7 @@ Notable defaults:
 |---------|---------|
 | Panel / API | `127.0.0.1:9970` |
 | CouchDB | `127.0.0.1:5984` |
-| DNS | local CoreDNS (`.bl` search domains) |
+| DNS | local CoreDNS (`.bl` / `.lo` search domains) |
 | Scraper | enabled → CouchDB |
 
 Flags:
@@ -147,6 +147,8 @@ make fmt
 ```
 
 Releases are tagged `v*` and built by [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+**Release order (`.lo` / mesh):** ship the **Agent** first; **Dpanel** bundles the Agent binary — only release Dpanel after an Agent tag with `.bl`/`.lo` support is available.
 
 ## Related repos
 

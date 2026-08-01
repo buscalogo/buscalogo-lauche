@@ -2,14 +2,14 @@
 
 **Idiomas:** [English](README.md) · [Português](README.pt.md) · [Español](README.es.md) · [日本語](README.ja.md)
 
-Daemon local da rede de busca descentralizada [BuscaLogo](https://buscalogo.com). Um único binário em Go gerencia mesh, DNS de sites `.bl`, scraping, armazenamento, busca P2P, painel web e integração opcional com desktop/navegador.
+Daemon local da rede de busca descentralizada [BuscaLogo](https://buscalogo.com). Um único binário em Go gerencia mesh, DNS de sites `.bl` / `.lo`, scraping, armazenamento, busca P2P, painel web e integração opcional com desktop/navegador.
 
 ## O que faz
 
 | Componente | Função |
 |------------|--------|
 | **Yggdrasil** | Rede mesh overlay (peers + IPv6) |
-| **CoreDNS** | Resolve domínios `.bl` (e afins) localmente |
+| **CoreDNS** | Resolve domínios `.bl` / `.lo` localmente |
 | **CouchDB** | Guarda scrapes, usuários e config |
 | **Scraper** | Crawler nativo em Go; indexa páginas no CouchDB |
 | **Busca P2P** | Consulta outros Agents via signaling |
@@ -102,7 +102,7 @@ Padrões relevantes:
 |------|--------|
 | Painel / API | `127.0.0.1:9970` |
 | CouchDB | `127.0.0.1:5984` |
-| DNS | CoreDNS local (domínios `.bl`) |
+| DNS | CoreDNS local (domínios `.bl` / `.lo`) |
 | Scraper | ativo → CouchDB |
 
 Flags:
@@ -132,7 +132,7 @@ frontend/            Painel web embutido (go:embed)
 desktop/             Shell desktop Neutralino
 extension/           Extensões do navegador
 assets/              Binários (Yggdrasil, CoreDNS, CouchDB)
-sites/               Exemplos de sites .bl
+sites/               Exemplos de sites .bl / .lo
 www/                 Assets estáticos de sites
 dist/                Scripts e artefatos de empacotamento
 ```
@@ -147,6 +147,8 @@ make fmt
 ```
 
 Releases em tags `v*` via [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+**Ordem de release (TLD `.lo` / mesh):** publique o **Agent** primeiro; o **Dpanel** embute o binário do Agent — só faça release do Dpanel depois que a tag do Agent com suporte a `.bl`/`.lo` estiver disponível.
 
 ## Repositórios relacionados
 

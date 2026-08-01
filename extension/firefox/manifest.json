@@ -9,12 +9,14 @@
   "host_permissions": [
     "http://127.0.0.1:9970/*",
     "http://localhost:9970/*",
-    "http://*.bl/*"
+    "http://*.bl/*",
+    "http://*.lo/*"
   ],
   "optional_permissions": [
     "http://127.0.0.1:9970/*",
     "http://localhost:9970/*",
     "http://*.bl/*",
+    "http://*.lo/*",
     "http://*/*",
     "https://*/*"
   ],

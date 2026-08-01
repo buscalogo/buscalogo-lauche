@@ -8,10 +8,10 @@
   const DISMISS_KEY = "bl-chip-dismissed";
 
   function isBlHost() {
-    return /\.bl$/i.test(location.hostname);
+    return /\.(bl|lo)$/i.test(location.hostname);
   }
 
-  /** Agent só serve HTTP em *.bl; HTTPS-Only do Firefox quebra same-origin. */
+  /** Agent só serve HTTP em *.bl/*.lo; HTTPS-Only do Firefox quebra same-origin. */
   function canUsePageProxy() {
     return isBlHost() && location.protocol === "http:";
   }
@@ -143,7 +143,7 @@
 
   async function proxyFetch(path, method, body) {
     if (!canUsePageProxy()) {
-      throw new Error("proxy só em http://*.bl");
+      throw new Error("proxy só em http://*.bl ou http://*.lo");
     }
     const opts = { method: method || "GET", headers: {} };
     if (method && method !== "GET" && method !== "HEAD") {
@@ -195,7 +195,7 @@
         sendResponse({
           ok: false,
           status: 0,
-          error: "proxy só em http://*.bl (HTTPS-Only bloqueia)",
+          error: "proxy só em http://*.bl|*.lo (HTTPS-Only bloqueia)",
         });
         return;
       }

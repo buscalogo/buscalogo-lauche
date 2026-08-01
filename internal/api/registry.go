@@ -181,7 +181,7 @@ func (s *Server) handleRegistryRegister(w http.ResponseWriter, r *http.Request) 
 	}
 	domain := ledger.NormalizeDomain(body.Domain)
 	if !ledger.ValidDomain(domain) {
-		writeErr(w, http.StatusBadRequest, "domínio inválido (use nome.bl)")
+		writeErr(w, http.StatusBadRequest, "domínio inválido (use %s)", ledger.DomainHint())
 		return
 	}
 	aaaa := body.AAAA
@@ -319,7 +319,7 @@ func mustLookup(s *Server, domain string) any {
 	return rec
 }
 
-// handleDNSJSON implementa DoH JSON (aplication/dns-json) para .bl via ledger local.
+// handleDNSJSON implementa DoH JSON (application/dns-json) para .bl/.lo via ledger local.
 func (s *Server) handleDNSJSON(w http.ResponseWriter, r *http.Request) {
 	name := ledger.NormalizeDomain(r.URL.Query().Get("name"))
 	name = strings.TrimSuffix(name, ".")
@@ -327,7 +327,7 @@ func (s *Server) handleDNSJSON(w http.ResponseWriter, r *http.Request) {
 	if qtype == "" {
 		qtype = "AAAA"
 	}
-	if s.ledger == nil || !strings.HasSuffix(name, ".bl") {
+	if s.ledger == nil || !ledger.HasAllowedTLD(name) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"Status": 3, "Question": []map[string]any{{"name": name, "type": qtype}}, "Answer": []any{},
 		})

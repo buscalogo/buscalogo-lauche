@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"buscalogo-agent/internal/config"
+	"buscalogo-agent/internal/ledger"
 	"buscalogo-agent/internal/system"
 )
 
@@ -47,7 +48,7 @@ func port53Free() bool {
 func searchNamespaces(cfg *config.Config) []string {
 	tlds := cfg.DNS.SearchDomains
 	if len(tlds) == 0 {
-		tlds = []string{"bl"}
+		tlds = ledger.DefaultSearchDomains()
 	}
 	var out []string
 	for _, t := range tlds {

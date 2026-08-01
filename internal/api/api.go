@@ -108,7 +108,7 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
-// corsLocal permite o shell Neutralino, extensões do navegador e páginas *.bl.
+// corsLocal permite o shell Neutralino, extensões do navegador e páginas *.bl / *.lo.
 func (s *Server) corsLocal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); isAllowedCORSOrigin(origin) {
@@ -223,7 +223,7 @@ func isAllowedCORSOrigin(origin string) bool {
 		case "127.0.0.1", "localhost", "::1":
 			return true
 		}
-		return strings.HasSuffix(host, ".bl")
+		return ledger.HasAllowedTLD(host)
 	default:
 		return false
 	}

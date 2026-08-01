@@ -90,9 +90,9 @@ func (m *Manager) ensureTLSMaterial() (certFile, keyFile string, err error) {
 		return "", "", err
 	}
 	m.buf.Infof("sites", "TLS self-signed criado em %s (substituível por CA depois)", filepath.Dir(certFile))
-	_ = os.WriteFile(filepath.Join(filepath.Dir(certFile), "README.md"), []byte(`# Certificados HTTPS .bl
+	_ = os.WriteFile(filepath.Join(filepath.Dir(certFile), "README.md"), []byte(`# Certificados HTTPS .bl / .lo
 
-site.crt / site.key — self-signed gerado pelo Agent.
+site.crt / site.key — self-signed gerado pelo Agent (SAN *.bl e *.lo).
 Próximo passo: CA BuscaLogo (web.tls.mode=ca) e root nos clientes.
 `), 0o644)
 	return certFile, keyFile, nil
@@ -107,7 +107,7 @@ func (m *Manager) writeSelfSigned(certFile, keyFile string) error {
 	if err != nil {
 		return err
 	}
-	hosts := []string{"localhost", "*.bl"}
+	hosts := []string{"localhost", "*.bl", "*.lo"}
 	m.mu.RLock()
 	for _, s := range m.sites {
 		if s.Enabled && s.Host != "" {
@@ -120,7 +120,7 @@ func (m *Manager) writeSelfSigned(certFile, keyFile string) error {
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			Organization: []string{"BuscaLogo"},
-			CommonName:   "BuscaLogo .bl (self-signed — pré-CA)",
+			CommonName:   "BuscaLogo .bl/.lo (self-signed — pré-CA)",
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(365 * 24 * time.Hour * 3), // 3 anos

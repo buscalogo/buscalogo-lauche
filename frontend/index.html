@@ -226,11 +226,11 @@
 
   <div class="card" id="card-network-ports">
     <div class="card-head">
-      <h2>Portas da rede .bl (Ygg)</h2>
+      <h2>Portas da rede .bl / .lo (Ygg)</h2>
       <span id="ports-badge" class="badge">—</span>
     </div>
     <div class="card-body">
-      <p class="hint" id="ports-hint" style="margin:0 0 12px">Verifica gossip (4401), discover (4402), HTTP (:80) e HTTPS (:443) pelo IPv6 Ygg. Sem 443/80 abertos, o site .bl não abre de outros peers.</p>
+      <p class="hint" id="ports-hint" style="margin:0 0 12px">Verifica gossip (4401), discover (4402), HTTP (:80) e HTTPS (:443) pelo IPv6 Ygg. Sem 443/80 abertos, o site .bl/.lo não abre de outros peers.</p>
       <div id="ports-list" class="ports-list"></div>
       <p id="ports-firewall-tip" class="hint" style="margin:12px 0 0;display:none;color:var(--amber)"></p>
       <div class="actions" style="margin-top:12px">
@@ -420,7 +420,7 @@
       <div id="sites-list" style="display:flex;flex-direction:column;gap:8px"></div>
       <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
         <div class="site-form-row">
-          <input id="site-host" type="text" placeholder="meusite.bl" class="site-input">
+          <input id="site-host" type="text" placeholder="meusite.bl ou meusite.lo" class="site-input">
           <select id="site-type" class="site-input">
             <option value="static">Estático</option>
             <option value="proxy">Proxy</option>
@@ -440,11 +440,11 @@
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="card-head"><h2>Registro .bl (ledger)</h2><span id="registry-gossip-badge" class="badge">—</span></div>
+    <div class="card-head"><h2>Registro .bl / .lo (ledger)</h2><span id="registry-gossip-badge" class="badge">—</span></div>
     <p class="hint">Publica o domínio na mesh via registry seed (GossipSub + Ygg). Outros Agents resolvem o AAAA e acessam seu site — o conteúdo fica neste nó.</p>
     <div class="card-body">
       <div class="site-form-row">
-        <input id="registry-domain" type="text" placeholder="receitas.bl" class="site-input">
+        <input id="registry-domain" type="text" placeholder="receitas.bl ou loja.lo" class="site-input">
         <button id="registry-register" class="btn green" type="button">Registrar (AAAA auto)</button>
         <button id="registry-sync" class="btn" type="button">Sincronizar</button>
         <button id="registry-refresh" class="btn" type="button">Atualizar lista</button>
