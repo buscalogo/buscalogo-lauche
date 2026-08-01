@@ -449,7 +449,7 @@
   <div class="card" style="margin-top:16px">
     <div class="card-head"><h2>Certificado HTTPS (CA BuscaLogo)</h2><span id="ca-badge" class="badge">—</span></div>
     <p class="hint">A raiz fica no Registry; este Agent descobre automaticamente quais registries <b>assinam</b> (<code>can_issue</code>) na mesh e pede o leaf só a eles. Use <b>Renovar certificado</b> com pelo menos um emissor online.</p>
-    <p class="hint">“Instalar CA” coloca a raiz no <b>SO</b>, no <b>NSS</b> (Firefox/Chrome/Brave) e nos <b>IDEs/CLIs</b> (Cursor, VS Code, Trae, Zed via system/OpenSSL, Node com <code>NODE_EXTRA_CA_CERTS</code>). Depois reinicie os apps. Se a página já abriu como self-signed: <code>brave://net-internals/#hsts</code> → Delete <code>buscalogo.bl</code>.</p>
+    <p class="hint">“Instalar CA” coloca a raiz no <b>SO</b>, no <b>NSS</b> (Firefox/Chrome/Brave — no Ubuntu Snap o Firefox também ganha <code>enterprise_roots</code> para ler a CA do sistema), e nos <b>IDEs/CLIs</b> (Cursor, VS Code, Trae, Node). Reinicie os apps depois. Se a página já abriu como self-signed: limpe HSTS no Brave/Chrome.</p>
     <p class="hint" id="ca-status-hint" style="margin-top:0"></p>
     <div class="actions">
       <button id="ca-renew" class="btn green" type="button">Renovar certificado do site</button>

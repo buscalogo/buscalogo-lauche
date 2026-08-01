@@ -44,7 +44,22 @@ if [ "$1" = "configure" ]; then
 			echo "BuscaLogo: rootCA em $ROOTCA — instale pela UI Sites se o trust store não foi atualizado"
 		fi
 		echo "BuscaLogo: para Firefox/Chrome/Brave/Cursor/VS Code/Trae/Zed, abra o Agent → Sites → Instalar CA (SO + navegadores + IDEs)"
-		echo "           (recomendado: apt install libnss3-tools; depois reinicie os apps)"
+		echo "           e reinicie o Firefox (Snap no Ubuntu usa enterprise_roots + NSS)."
+		# Ubuntu Firefox Snap: confiar na CA do SO
+		mkdir -p /etc/firefox/policies 2>/dev/null || true
+		if [ -d /etc/firefox ]; then
+			cat > /etc/firefox/policies/policies.json <<'POL' || true
+{
+  "policies": {
+    "Certificates": {
+      "ImportEnterpriseRoots": true
+    }
+  }
+}
+POL
+			chmod 644 /etc/firefox/policies/policies.json 2>/dev/null || true
+			echo "BuscaLogo: Firefox policies ImportEnterpriseRoots=true"
+		fi
 	fi
 fi
 #DEBHELPER#

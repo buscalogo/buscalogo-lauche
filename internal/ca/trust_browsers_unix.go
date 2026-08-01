@@ -185,6 +185,12 @@ func InstallUserTrust(buf systemAppender, rootPEM []byte) (UserTrustResult, erro
 		res.Apps = append(res.Apps, apps...)
 	}
 
+	if ff, err := InstallFirefoxEnterpriseRoots(buf); err != nil {
+		logf(buf, "ca: firefox enterprise_roots: %v\n", err)
+	} else {
+		res.Apps = append(res.Apps, ff...)
+	}
+
 	browsers, nssErr := installNSSTrust(buf, home, rootPEM)
 	res.Browsers = browsers
 	if nssErr != nil && len(browsers) == 0 && len(res.Apps) == 0 {

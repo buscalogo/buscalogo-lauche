@@ -96,6 +96,10 @@ func InstallSystemTrust(buf systemAppender, rootPEM []byte) error {
 			return fmt.Errorf("%s: %w", strings.Join(t.update, " "), err)
 		}
 	}
+	// Snap/deb Firefox: usar CA do SO (sem depender de certutil).
+	if _, err := InstallFirefoxEnterpriseRoots(buf); err != nil && buf != nil {
+		_, _ = fmt.Fprintf(buf, "ca: firefox enterprise_roots (após SO): %v\n", err)
+	}
 	return nil
 }
 
