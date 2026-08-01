@@ -431,6 +431,7 @@ func (s *Service) Start() error {
 	if err := process.KillExistingByBinary(s.buf, "couchdb", binary); err != nil {
 		s.buf.Warnf("couchdb", "limpeza de processos antigos: %v", err)
 	}
+	s.killErlangOrphans()
 
 	if s.proc == nil {
 		s.proc = process.New(process.Options{
@@ -446,6 +447,7 @@ func (s *Service) Start() error {
 				if err := process.KillExistingByBinary(s.buf, "couchdb", binary); err != nil {
 					s.buf.Warnf("couchdb", "PreStart: limpeza de processos: %v", err)
 				}
+				s.killErlangOrphans()
 				ini, err := s.WriteLocalIni()
 				if err != nil {
 					return err

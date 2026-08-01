@@ -45,8 +45,7 @@ func (s *Service) RepairAndStart() error {
 		s.buf.Warnf("couchdb", "limpeza release: %v", err)
 	}
 	binary, _ := s.BinaryPath()
-	_ = process.KillExistingByBinary(s.buf, "beam.smp", "")
-	_ = process.KillExistingByBinary(s.buf, "epmd", "")
+	s.killErlangOrphans()
 	if binary != "" {
 		_ = process.KillExistingByBinary(s.buf, "couchdb", binary)
 	} else {
