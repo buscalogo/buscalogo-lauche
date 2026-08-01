@@ -1,3 +1,1 @@
-# Binários bundled do BuscaLogo Agent (Linux).
-# Populado por: make assets
-# Conteúdo: yggdrasil, coredns, couchdb/ (diretório)
+ASSET_ARCH=amd64

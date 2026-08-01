@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"buscalogo-agent/internal/ca"
 	"buscalogo-agent/internal/paths"
 )
 
@@ -61,7 +62,27 @@ func (m *Manager) certPaths() (certFile, keyFile string, err error) {
 	if err != nil {
 		return "", "", err
 	}
+	// Prefer chain for serving when present (leaf+root).
+	chain := filepath.Join(dir, ca.ChainName)
+	if _, err := os.Stat(chain); err == nil {
+		return chain, filepath.Join(dir, ca.LeafKeyName), nil
+	}
 	return filepath.Join(dir, defaultCertName), filepath.Join(dir, defaultKeyName), nil
+}
+
+func (m *Manager) tlsDomains() []string {
+	hosts := []string{}
+	m.mu.RLock()
+	for _, s := range m.sites {
+		if s.Enabled && s.Host != "" {
+			hosts = append(hosts, s.Host)
+		}
+	}
+	m.mu.RUnlock()
+	if len(hosts) == 0 {
+		hosts = []string{"buscalogo.bl"}
+	}
+	return hosts
 }
 
 func (m *Manager) ensureTLSMaterial() (certFile, keyFile string, err error) {
@@ -71,31 +92,68 @@ func (m *Manager) ensureTLSMaterial() (certFile, keyFile string, err error) {
 	}
 	mode := m.cfg.Web.TLS.Mode
 	if mode == "" {
-		mode = "self_signed"
+		mode = "ca"
 	}
 	m.mu.Lock()
-	m.tlsMode = mode
+	issuer := m.issuer
 	m.mu.Unlock()
 
-	_, errC := os.Stat(certFile)
-	_, errK := os.Stat(keyFile)
-	if errC == nil && errK == nil {
+	switch mode {
+	case "off":
+		return "", "", fmt.Errorf("HTTPS desabilitado")
+	case "files":
+		if _, errC := os.Stat(certFile); errC != nil {
+			return "", "", fmt.Errorf("cert/key ausentes (mode=files)")
+		}
+		if _, errK := os.Stat(keyFile); errK != nil {
+			return "", "", fmt.Errorf("cert/key ausentes (mode=files)")
+		}
+		m.mu.Lock()
+		m.tlsMode = "files"
+		m.mu.Unlock()
 		return certFile, keyFile, nil
+	case "ca":
+		if issuer != nil {
+			dir, err := m.certDir()
+			if err != nil {
+				return "", "", err
+			}
+			domains := m.tlsDomains()
+			if err := issuer.EnsureLeaf(domains, dir); err != nil {
+				m.buf.Warnf("sites", "CA issue falhou (%v) — fallback self_signed", err)
+				if err := m.writeSelfSigned(filepath.Join(dir, defaultCertName), filepath.Join(dir, defaultKeyName)); err != nil {
+					return "", "", err
+				}
+				m.mu.Lock()
+				m.tlsMode = "self_signed"
+				m.mu.Unlock()
+				return filepath.Join(dir, defaultCertName), filepath.Join(dir, defaultKeyName), nil
+			}
+			m.mu.Lock()
+			m.tlsMode = "ca"
+			m.mu.Unlock()
+			// refresh paths (chain may now exist)
+			return m.certPaths()
+		}
+		m.buf.Warnf("sites", "mode=ca sem issuer — self_signed")
+		fallthrough
+	default: // self_signed
+		dir := filepath.Dir(certFile)
+		leafCert := filepath.Join(dir, defaultCertName)
+		leafKey := filepath.Join(dir, defaultKeyName)
+		_, errC := os.Stat(leafCert)
+		_, errK := os.Stat(leafKey)
+		if errC != nil || errK != nil {
+			if err := m.writeSelfSigned(leafCert, leafKey); err != nil {
+				return "", "", err
+			}
+			m.buf.Infof("sites", "TLS self-signed criado em %s", dir)
+		}
+		m.mu.Lock()
+		m.tlsMode = "self_signed"
+		m.mu.Unlock()
+		return leafCert, leafKey, nil
 	}
-	if mode == "files" || mode == "ca" {
-		return "", "", fmt.Errorf("cert/key ausentes em %s (mode=%s) — aguarde CA ou coloque site.crt/site.key", filepath.Dir(certFile), mode)
-	}
-	// self_signed: gera placeholder até existir CA BuscaLogo.
-	if err := m.writeSelfSigned(certFile, keyFile); err != nil {
-		return "", "", err
-	}
-	m.buf.Infof("sites", "TLS self-signed criado em %s (substituível por CA depois)", filepath.Dir(certFile))
-	_ = os.WriteFile(filepath.Join(filepath.Dir(certFile), "README.md"), []byte(`# Certificados HTTPS .bl / .lo
-
-site.crt / site.key — self-signed gerado pelo Agent (SAN *.bl e *.lo).
-Próximo passo: CA BuscaLogo (web.tls.mode=ca) e root nos clientes.
-`), 0o644)
-	return certFile, keyFile, nil
 }
 
 func (m *Manager) writeSelfSigned(certFile, keyFile string) error {
@@ -107,23 +165,15 @@ func (m *Manager) writeSelfSigned(certFile, keyFile string) error {
 	if err != nil {
 		return err
 	}
-	hosts := []string{"localhost", "*.bl", "*.lo"}
-	m.mu.RLock()
-	for _, s := range m.sites {
-		if s.Enabled && s.Host != "" {
-			hosts = append(hosts, s.Host)
-		}
-	}
-	m.mu.RUnlock()
-
+	hosts := append([]string{"localhost"}, m.tlsDomains()...)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			Organization: []string{"BuscaLogo"},
-			CommonName:   "BuscaLogo .bl/.lo (self-signed — pré-CA)",
+			CommonName:   "BuscaLogo .bl/.lo (self-signed)",
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour * 3), // 3 anos
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour * 3),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
@@ -235,12 +285,13 @@ func (m *Manager) tryListenTLS(port int, cert tls.Certificate, fallback bool) bo
 		m.tlsPort = port
 		m.tlsRunning = true
 		m.tlsError = ""
+		mode := m.tlsMode
 		m.mu.Unlock()
 
 		if fallback {
-			m.buf.Warnf("sites", "HTTPS em %s (fallback — :443 indisponível; self-signed até CA)", addr)
+			m.buf.Warnf("sites", "HTTPS em %s (fallback — :443 indisponível; mode=%s)", addr, mode)
 		} else {
-			m.buf.Infof("sites", "HTTPS em %s (mode=%s — CA BuscaLogo depois)", addr, m.cfg.Web.TLS.Mode)
+			m.buf.Infof("sites", "HTTPS em %s (mode=%s)", addr, mode)
 		}
 
 		err = srv.Serve(ln)

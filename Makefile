@@ -99,6 +99,8 @@ deb: build desktop-icons desktop-neutralino
 	@test -f dist/deb/opt/buscalogo/extension/chrome/manifest.json
 	@test -f dist/deb/opt/buscalogo/extension/firefox/manifest.json
 	@cp assets/icons/logo.png dist/deb/opt/buscalogo/buscalogo-agent.png
+	@mkdir -p dist/deb/opt/buscalogo/certs
+	@if [ -f internal/ca/certs/rootCA.pem ]; then cp -f internal/ca/certs/rootCA.pem dist/deb/opt/buscalogo/certs/rootCA.pem; fi
 	@cp assets/linux/coredns dist/deb/opt/buscalogo/data/bin/coredns
 	@cp assets/linux/yggdrasil dist/deb/opt/buscalogo/data/bin/yggdrasil
 	@if [ -d assets/linux/couchdb/bin ]; then \

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"flag"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"buscalogo-agent/internal/account"
 	"buscalogo-agent/internal/api"
+	"buscalogo-agent/internal/ca"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
@@ -195,6 +197,60 @@ func runAgent(stop <-chan struct{}, headless bool) error {
 			}
 		}
 	}
+
+	caHelper := &ca.AgentHelper{
+		Cfg: cfg,
+		Buf: buf,
+		SignKey: func() (ed25519.PrivateKey, error) {
+			return acct.SigningKey()
+		},
+		Resolve: func() []string {
+			var urls []string
+			if domainGossip != nil {
+				for _, p := range domainGossip.ListRegistries() {
+					if p.YggIP == "" {
+						continue
+					}
+					if p.Status == p2pdomain.StatusOffline {
+						continue
+					}
+					urls = append(urls, ca.BaseURLFromYgg(p.YggIP, 9970))
+				}
+			}
+			return urls
+		},
+		FilterDomains: func(domains []string) []string {
+			if ledgerEng == nil {
+				return nil
+			}
+			priv, err := acct.SigningKey()
+			if err != nil {
+				return nil
+			}
+			pub := priv.Public().(ed25519.PublicKey)
+			var out []string
+			for _, d := range domains {
+				dns, err := ledgerEng.Store().GetDNS(d)
+				if err != nil || dns == nil {
+					continue
+				}
+				if len(dns.Owner) == len(pub) {
+					ok := true
+					for i := range pub {
+						if dns.Owner[i] != pub[i] {
+							ok = false
+							break
+						}
+					}
+					if ok {
+						out = append(out, d)
+					}
+				}
+			}
+			return out
+		},
+	}
+	sitesMgr.SetCertIssuer(caHelper)
 
 	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, acct, p2pConn, dnsMgr, sitesMgr, updater, ledgerEng, domainGossip)
 	updater.StartBackground()

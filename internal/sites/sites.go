@@ -29,9 +29,17 @@ type Site struct {
 	Enabled  bool   `yaml:"enabled" json:"enabled"`
 }
 
+// CertIssuer obtém leaf assinado pela CA do registry (opcional no Agent).
+type CertIssuer interface {
+	EnsureLeaf(domains []string, certDir string) error
+	EnsureRoot() ([]byte, error)
+	RootPEM() []byte
+}
+
 type Manager struct {
 	cfg          *config.Config
 	buf          *logx.Buffer
+	issuer       CertIssuer
 	srv          *http.Server
 	srvTLS       *http.Server
 	mu           sync.RWMutex
@@ -49,6 +57,58 @@ type Manager struct {
 
 func New(cfg *config.Config, buf *logx.Buffer) *Manager {
 	return &Manager{cfg: cfg, buf: buf, proxies: make(map[string]*httputil.ReverseProxy), actualPort: cfg.Web.Port}
+}
+
+// SetCertIssuer liga o helper CA do Agent (nil = só self_signed/files).
+func (m *Manager) SetCertIssuer(issuer CertIssuer) {
+	m.mu.Lock()
+	m.issuer = issuer
+	m.mu.Unlock()
+}
+
+// CachedRootPEM devolve a raiz em cache (para download/install no Agent).
+func (m *Manager) CachedRootPEM() []byte {
+	m.mu.RLock()
+	issuer := m.issuer
+	m.mu.RUnlock()
+	if issuer == nil {
+		return nil
+	}
+	if b := issuer.RootPEM(); len(b) > 0 {
+		return b
+	}
+	b, _ := issuer.EnsureRoot()
+	return b
+}
+
+// RenewTLSCert re-emite leaf (se CA) e reinicia HTTPS.
+func (m *Manager) RenewTLSCert() error {
+	m.mu.RLock()
+	issuer := m.issuer
+	mode := m.cfg.Web.TLS.Mode
+	m.mu.RUnlock()
+	if mode == "" {
+		mode = "ca"
+	}
+	if mode == "ca" && issuer != nil {
+		dir, err := m.certDir()
+		if err != nil {
+			return err
+		}
+		domains := m.tlsDomains()
+		if err := issuer.EnsureLeaf(domains, dir); err != nil {
+			return err
+		}
+	} else {
+		// força regenerar self-signed
+		certFile, keyFile, err := m.certPaths()
+		if err != nil {
+			return err
+		}
+		_ = os.Remove(certFile)
+		_ = os.Remove(keyFile)
+	}
+	return m.Restart()
 }
 
 // LoadSites combina sites da config (legado/API) com arquivos sites/*.yaml.

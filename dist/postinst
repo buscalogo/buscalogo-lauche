@@ -29,5 +29,20 @@ if [ "$1" = "configure" ]; then
 		cp "$DIR/resources/icons/appIcon.png" "$DIR/trayIcon.png" 2>/dev/null || true
 	fi
 	chmod 0644 "$DIR/trayIcon.png" 2>/dev/null || true
+	# Instala a raiz BuscaLogo no trust store (best-effort).
+	ROOTCA="$DIR/certs/rootCA.pem"
+	if [ -f "$ROOTCA" ]; then
+		if [ -d /usr/local/share/ca-certificates ]; then
+			cp -f "$ROOTCA" /usr/local/share/ca-certificates/buscalogo-root-ca.crt 2>/dev/null || true
+			update-ca-certificates 2>/dev/null || true
+			echo "BuscaLogo: CA raiz instalada (update-ca-certificates)"
+		elif [ -d /etc/pki/ca-trust/source/anchors ]; then
+			cp -f "$ROOTCA" /etc/pki/ca-trust/source/anchors/buscalogo-root-ca.pem 2>/dev/null || true
+			update-ca-trust extract 2>/dev/null || true
+			echo "BuscaLogo: CA raiz instalada (update-ca-trust)"
+		else
+			echo "BuscaLogo: rootCA em $ROOTCA — instale pela UI Sites se o trust store não foi atualizado"
+		fi
+	fi
 fi
 #DEBHELPER#

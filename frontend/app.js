@@ -54,9 +54,37 @@ document.querySelectorAll(".tab").forEach(tab => {
     }
     if (tab.dataset.tab === "sites") {
       renderSites();
+      refreshCAStatus();
     }
   });
 });
+
+async function refreshCAStatus() {
+  const hint = $("#ca-status-hint");
+  const badge = $("#ca-badge");
+  try {
+    const r = await fetch("/api/ca/status");
+    const j = await r.json();
+    const trust = !!j.system_trust_installed;
+    const mode = j.leaf_mode || "—";
+    if (badge) {
+      badge.textContent = trust ? "CA no sistema" : "CA pendente";
+      badge.className = "badge " + (trust ? "green" : "");
+    }
+    if (hint) {
+      const parts = [];
+      parts.push(trust ? "Raiz instalada no trust store do SO." : "Raiz ainda não instalada no SO.");
+      if (j.root_available || j.ready) parts.push("rootCA disponível para download.");
+      if (mode) parts.push(`HTTPS mode=${mode}.`);
+      if (j.tls_error) parts.push(`TLS: ${j.tls_error}`);
+      if (j.subject) parts.push(`Emissor: ${j.subject}`);
+      hint.textContent = parts.join(" ");
+      hint.style.color = trust ? "" : "var(--amber)";
+    }
+  } catch (e) {
+    if (hint) hint.textContent = "Não foi possível ler status da CA.";
+  }
+}
 
 /* Toast */
 function toast(msg, dur) {
@@ -189,9 +217,13 @@ async function fetchStatus() {
         if (w.tls_running) {
           const mode = w.tls_mode || "self_signed";
           tlsHint.style.color = "";
-          tlsHint.innerHTML = mode === "self_signed"
-            ? `HTTPS :${w.tls_port || 443} ativo (certificado <b>self-signed</b> — navegador avisa até a CA BuscaLogo). <code>https://&lt;host&gt;.bl</code>`
-            : `HTTPS :${w.tls_port || 443} ativo (mode=${escapeHtml(mode)}).`;
+          if (mode === "ca") {
+            tlsHint.innerHTML = `HTTPS :${w.tls_port || 443} ativo com <b>CA BuscaLogo</b>. Instale a raiz abaixo para confiar em todos os .bl/.lo.`;
+          } else if (mode === "self_signed") {
+            tlsHint.innerHTML = `HTTPS :${w.tls_port || 443} ativo (certificado <b>self-signed</b> — registre o domínio e use Renovar, ou aguarde o registry).`;
+          } else {
+            tlsHint.innerHTML = `HTTPS :${w.tls_port || 443} ativo (mode=${escapeHtml(mode)}).`;
+          }
         } else if (w.tls_error) {
           tlsHint.style.color = "var(--amber)";
           tlsHint.textContent = `HTTPS indisponível: ${w.tls_error}`;
@@ -199,6 +231,7 @@ async function fetchStatus() {
           tlsHint.textContent = "";
         }
       }
+      refreshCAStatus();
       const btn = $("#web-enable-80");
       const restartBtn = $("#web-restart");
       const privOK = w.running && actual === 80 && !w.fallback && w.tls_running && (w.tls_port === 443);
@@ -2052,6 +2085,34 @@ document.addEventListener("click", (ev) => {
   if (ev.target.id === "registry-refresh") refreshRegistry();
   if (ev.target.id === "web-enable-80") doWebEnable80();
   if (ev.target.id === "web-restart") doWebRestart();
+  if (ev.target.id === "ca-refresh") refreshCAStatus();
+  if (ev.target.id === "ca-install-trust") {
+    (async () => {
+      try {
+        const r = await fetch("/api/ca/install-trust", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        toast("CA instalada no sistema");
+        refreshCAStatus();
+      } catch (e) {
+        toast("Falha ao instalar CA: " + e.message, 4000);
+      }
+    })();
+  }
+  if (ev.target.id === "ca-renew") {
+    (async () => {
+      try {
+        const r = await fetch("/api/ca/renew", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        toast("Certificado renovado (mode=" + (j.tls_mode || "?") + ")");
+        fetchStatus();
+        refreshCAStatus();
+      } catch (e) {
+        toast("Falha ao renovar: " + e.message, 4000);
+      }
+    })();
+  }
   if (ev.target.id === "scraper-add-url") addScraperURL();
   if (ev.target.id === "scraper-clear-queue") clearScraperQueue();
   if (ev.target.id === "scraper-refresh-results") refreshScraperInfo();

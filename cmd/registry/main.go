@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"buscalogo-agent/internal/api"
+	"buscalogo-agent/internal/ca"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/dns"
@@ -102,9 +103,29 @@ func main() {
 		buf.Infof("registry", "bootstrap HTTP: lista vazia em %s — fallback rede", cfg.Registry.BootstrapURL)
 	}
 
+	caDir := ca.DirForHome(home)
+	allowGen := cfg.CA.GenerateIfMissing || os.Getenv("BUSCALOGO_CA_GENERATE") == "1"
+	var caAuth *ca.Authority
+	var errCA error
+	if allowGen {
+		caAuth, errCA = ca.EnsureRootAllowGenerate(caDir)
+		if errCA == nil {
+			buf.Warnf("ca", "CA gerada/carregada com generate_if_missing — use UMA raiz na malha (fingerprint=%s)", caAuth.FingerprintSHA256())
+		}
+	} else {
+		caAuth, errCA = ca.EnsureRoot(caDir)
+	}
+	if errCA != nil {
+		log.Fatalf("CA raiz: %v\n  Bootstrap (só no 1º seed): BUSCALOGO_CA_GENERATE=1 ./bin/buscalogo-registry\n  Depois copie data/certs/ca/rootCA.pem + rootCA-key.pem para TODOS os registries.", errCA)
+	}
+	buf.Infof("ca", "raiz canônica em %s (subject=%s fingerprint=%s)", caDir, caAuth.Cert.Subject.CommonName, caAuth.FingerprintSHA256())
+	buf.Infof("ca", "backup obrigatório da chave: %s/%s — mesma CA em todos os nós", caDir, ca.RootKeyName)
+	sitesMgr.SetCertIssuer(&ca.LocalIssuer{Auth: caAuth, Buf: buf})
+
 	updater := update.NewProduct(cfg, buf, update.ProductRegistry)
 	// API completa com serviços opcionais nil (sem scraper/couch/account/p2p).
 	srv := api.New(cfg, buf, cdns, ygg, nil, nil, nil, nil, dnsMgr, sitesMgr, updater, ledgerEng, domainGossip)
+	srv.SetCA(caAuth)
 	updater.StartBackground()
 
 	if err := sitesMgr.SyncHosts(); err != nil {

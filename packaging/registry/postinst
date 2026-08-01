@@ -5,10 +5,19 @@ HOME_DATA=/var/lib/buscalogo-registry
 BIN="$DIR/buscalogo-registry"
 
 if [ "$1" = "configure" ]; then
-	mkdir -p "$HOME_DATA/data"
+	mkdir -p "$HOME_DATA/data/certs/ca"
 	if [ ! -f "$HOME_DATA/data/config.yaml" ] && [ -f "$DIR/config.example.yaml" ]; then
 		cp "$DIR/config.example.yaml" "$HOME_DATA/data/config.yaml"
 		echo "BuscaLogo Registry: config criada em $HOME_DATA/data/config.yaml"
+	fi
+	# Só o certificado público vem no .deb; a chave NÃO é publicada no GitHub.
+	if [ -f "$DIR/certs/rootCA.pem" ] && [ ! -f "$HOME_DATA/data/certs/ca/rootCA.pem" ]; then
+		cp "$DIR/certs/rootCA.pem" "$HOME_DATA/data/certs/ca/rootCA.pem"
+		chmod 644 "$HOME_DATA/data/certs/ca/rootCA.pem"
+		echo "BuscaLogo Registry: rootCA.pem instalada em $HOME_DATA/data/certs/ca/"
+	fi
+	if [ ! -f "$HOME_DATA/data/certs/ca/rootCA-key.pem" ]; then
+		echo "BuscaLogo Registry: copie rootCA-key.pem (chave privada) para $HOME_DATA/data/certs/ca/ antes de emitir certificados"
 	fi
 	chmod 0755 "$BIN" 2>/dev/null || true
 	if command -v setcap >/dev/null 2>&1; then

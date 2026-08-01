@@ -51,6 +51,7 @@ rm -rf "$STAGE"
 mkdir -p \
   "$STAGE/DEBIAN" \
   "$STAGE/opt/buscalogo-registry" \
+  "$STAGE/opt/buscalogo-registry/certs" \
   "$STAGE/lib/systemd/system" \
   "$STAGE/usr/local/bin"
 
@@ -60,6 +61,14 @@ cp -f "$PKG_DIR/update-install.sh" "$STAGE/opt/buscalogo-registry/update-install
 chmod 755 "$STAGE/opt/buscalogo-registry/update-install.sh"
 if [[ -f "$CFG_SRC" ]]; then
   cp -f "$CFG_SRC" "$STAGE/opt/buscalogo-registry/config.example.yaml"
+fi
+# Certificado público da mesh (nunca a chave — rootCA-key.pem fica fora do GitHub)
+ROOTCA_SRC="$ROOT/internal/ca/certs/rootCA.pem"
+if [[ -f "$ROOTCA_SRC" ]]; then
+  cp -f "$ROOTCA_SRC" "$STAGE/opt/buscalogo-registry/certs/rootCA.pem"
+  chmod 644 "$STAGE/opt/buscalogo-registry/certs/rootCA.pem"
+else
+  echo "aviso: $ROOTCA_SRC ausente — registry .deb sem CA embutida" >&2
 fi
 cp -f "$PKG_DIR/buscalogo-registry.service" "$STAGE/lib/systemd/system/buscalogo-registry.service"
 ln -sf /opt/buscalogo-registry/buscalogo-registry "$STAGE/usr/local/bin/buscalogo-registry"

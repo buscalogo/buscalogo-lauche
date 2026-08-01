@@ -19,6 +19,7 @@ import (
 	"buscalogo-agent/frontend"
 	"buscalogo-agent/internal/account"
 	"buscalogo-agent/internal/autostart"
+	"buscalogo-agent/internal/ca"
 	"buscalogo-agent/internal/config"
 	"buscalogo-agent/internal/coredns"
 	"buscalogo-agent/internal/couchdb"
@@ -54,6 +55,7 @@ type Server struct {
 	updater   *update.Service
 	ledger    *ledger.Engine
 	p2pdomain *p2pdomain.Service
+	ca        *ca.Authority
 	srv       *http.Server
 
 	portsMu    sync.Mutex
@@ -174,7 +176,8 @@ func (s *Server) tokenOK(r *http.Request) bool {
 
 func (s *Server) mutationPublicPath(path string) bool {
 	switch path {
-	case "/api/account/login", "/api/account/register", "/api/account/import":
+	case "/api/account/login", "/api/account/register", "/api/account/import",
+		"/api/ca/issue": // Agents na malha pedem leaf com prova Ed25519 (sem sessão)
 		return true
 	default:
 		return false
@@ -285,6 +288,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/registry/sync", s.handleRegistrySync)
 	mux.HandleFunc("POST /api/registry/{domain}/update", s.handleRegistryUpdate)
 	mux.HandleFunc("POST /api/registry/{domain}/transfer", s.handleRegistryTransfer)
+	mux.HandleFunc("GET /api/ca/root", s.handleCARoot)
+	mux.HandleFunc("GET /api/ca/status", s.handleCAStatus)
+	mux.HandleFunc("POST /api/ca/issue", s.handleCAIssue)
+	mux.HandleFunc("POST /api/ca/install-trust", s.handleCAInstallTrust)
+	mux.HandleFunc("POST /api/ca/renew", s.handleCARenew)
 	mux.HandleFunc("GET /dns-query", s.handleDNSJSON)
 	mux.HandleFunc("GET /api/dns-query", s.handleDNSJSON)
 	mux.HandleFunc("POST /api/account/import", s.handleAccountImport)
@@ -1645,6 +1653,7 @@ func (s *Server) handleSitesAdd(w http.ResponseWriter, r *http.Request) {
 	if s.coredns != nil {
 		_, _ = s.coredns.WriteCorefile()
 	}
+	s.tryRenewSiteTLS()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sites": s.sites.ListSites()})
 }
 
@@ -1672,7 +1681,22 @@ func (s *Server) handleSitesDelete(w http.ResponseWriter, r *http.Request) {
 	if s.coredns != nil {
 		_, _ = s.coredns.WriteCorefile()
 	}
+	s.tryRenewSiteTLS()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sites": s.sites.ListSites()})
+}
+
+// tryRenewSiteTLS pede leaf CA de novo (best-effort) após mudar sites/domínios.
+func (s *Server) tryRenewSiteTLS() {
+	if s.sites == nil {
+		return
+	}
+	go func() {
+		if err := s.sites.RenewTLSCert(); err != nil {
+			s.buf.Warnf("ca", "renovar TLS após mudança de site: %v", err)
+			return
+		}
+		s.buf.Infof("ca", "TLS renovado após mudança de site/domínio")
+	}()
 }
 
 func (s *Server) handleOpenURL(w http.ResponseWriter, r *http.Request) {

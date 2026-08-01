@@ -33,6 +33,8 @@ sudo dpkg -i buscalogo-agent_*_amd64.deb
 buscalogo-agent
 ```
 
+O `.deb` tenta instalar a **CA raiz BuscaLogo** no trust store (HTTPS `.bl`/`.lo`). Se falhar: aba **Sites → Instalar CA**. Leafs são assinados pelo Registry; a chave da CA não fica no Agent.
+
 Abra o painel: [http://127.0.0.1:9970](http://127.0.0.1:9970)
 
 ### Compilar do código

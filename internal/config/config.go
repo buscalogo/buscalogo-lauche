@@ -33,9 +33,23 @@ type Data struct {
 	Scraper   Scraper   `yaml:"scraper" json:"scraper"`
 	P2P       P2P       `yaml:"p2p" json:"p2p"`
 	Registry  Registry  `yaml:"registry" json:"registry"`
+	CA        CA        `yaml:"ca" json:"ca"`
 	Update    Update    `yaml:"update" json:"update"`
 	Cache     Cache     `yaml:"cache" json:"cache"`
 	Bootstrap []string  `yaml:"bootstrap" json:"bootstrap"`
+}
+
+// CA configura emissão/confiança da raiz BuscaLogo (chave só no registry).
+// Na malha deve existir UMA única raiz: copie rootCA.pem + rootCA-key.pem
+// para todos os registries. Não gere CA por nó.
+type CA struct {
+	// IssueURL — base HTTP do registry (ex.: http://[200:…]:9970). Vazio = descobrir na malha.
+	IssueURL string `yaml:"issue_url" json:"issue_url"`
+	// RenewBefore — renovar leaf quando faltar menos que isso para expirar (Go duration).
+	RenewBefore string `yaml:"renew_before" json:"renew_before"`
+	// GenerateIfMissing — se true, o registry cria uma CA nova quando não há arquivos.
+	// Default false: exige a CA canônica já colocada em data/certs/ca/ (evita uma raiz por nó).
+	GenerateIfMissing bool `yaml:"generate_if_missing" json:"generate_if_missing"`
 }
 
 type Node struct {
@@ -58,12 +72,12 @@ type Web struct {
 	TLS            WebTLS `yaml:"tls" json:"tls"`
 }
 
-// WebTLS configura HTTPS (:443). Certs em cert_dir; modo self_signed até existir CA BuscaLogo.
+// WebTLS configura HTTPS (:443). Certs em cert_dir; mode=ca pede leaf ao registry.
 type WebTLS struct {
 	Enabled  bool   `yaml:"enabled" json:"enabled"`
 	Port     int    `yaml:"port" json:"port"`           // default 443
 	CertDir  string `yaml:"cert_dir" json:"cert_dir"`   // relativo a data/ ou absoluto
-	Mode     string `yaml:"mode" json:"mode"`           // self_signed | files | ca (futuro)
+	Mode     string `yaml:"mode" json:"mode"`           // ca | self_signed | files | off
 	CertFile string `yaml:"cert_file" json:"cert_file"` // opcional (mode=files)
 	KeyFile  string `yaml:"key_file" json:"key_file"`
 }
@@ -242,8 +256,9 @@ func Default() *Config {
 		Web: Web{Listen: "127.0.0.1", Port: 80, ExternalListen: true, TLS: WebTLS{
 			Enabled: true,
 			Port:    443,
-			Mode:    "self_signed",
+			Mode:    "ca",
 		}},
+		CA: CA{RenewBefore: "168h"},
 		DNS: DNS{
 			Enabled:       true,
 			Mode:          "local",
@@ -360,9 +375,12 @@ func (c *Config) applyDefaults() {
 		c.Web.TLS.Port = 443
 	}
 	if c.Web.TLS.Mode == "" {
-		// Config legada sem bloco tls → liga HTTPS self-signed (:443).
-		c.Web.TLS.Mode = "self_signed"
+		// Default: tenta CA do registry; cai para self_signed se indisponível.
+		c.Web.TLS.Mode = "ca"
 		c.Web.TLS.Enabled = true
+	}
+	if strings.TrimSpace(c.CA.RenewBefore) == "" {
+		c.CA.RenewBefore = "168h"
 	}
 	if c.DNS.Mode == "" {
 		c.DNS.Mode = "local"

@@ -251,11 +251,12 @@ func (s *Server) handleRegistryRegister(w http.ResponseWriter, r *http.Request) 
 	if s.p2pdomain != nil {
 		s.p2pdomain.ForceSync()
 	}
+	s.tryRenewSiteTLS()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
 		"event":  eventView(ev),
 		"record": mustLookup(s, domain),
-		"hint":   "Sync enviado aos peers/registry; sirva o site com portas Ygg abertas.",
+		"hint":   "Sync enviado; certificado HTTPS será renovado se o domínio estiver nos Sites.",
 	})
 }
 

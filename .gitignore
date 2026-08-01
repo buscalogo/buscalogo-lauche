@@ -14,6 +14,12 @@ coverage.html
 # --- Dados em runtime (config, senhas, CouchDB, binários extraídos) ---
 data/
 
+# Nunca versionar chave da CA (público rootCA.pem pode ir em internal/ca/certs/)
+**/rootCA-key.pem
+internal/ca/certs/*-key.pem
+# *.pem abaixo ignora tudo; liberar só o certificado público embutido no Agent/deb
+!internal/ca/certs/rootCA.pem
+
 # --- Binários embutidos (make assets / make assets-couchdb) ---
 assets/linux/coredns
 assets/linux/yggdrasil
@@ -71,6 +77,7 @@ extension/*.pem
 extension/chrome.pem
 *.pem
 !assets/**/*.pem
+!internal/ca/certs/rootCA.pem
 
 
 # --- Neutralino desktop ---
