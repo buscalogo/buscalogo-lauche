@@ -37,9 +37,14 @@ func (s *Server) handleCAStatus(w http.ResponseWriter, r *http.Request) {
 		for k, v := range s.ca.Status() {
 			out[k] = v
 		}
-		out["role"] = "issuer"
+		if s.ca.CanIssue() {
+			out["role"] = "issuer"
+		} else {
+			out["role"] = "registry"
+		}
 	} else {
 		out["ready"] = false
+		out["can_issue"] = false
 		out["role"] = "client"
 		if pem, err := s.rootCAPEM(); err == nil && len(pem) > 0 {
 			out["root_available"] = true
@@ -51,13 +56,18 @@ func (s *Server) handleCAStatus(w http.ResponseWriter, r *http.Request) {
 		out["tls_port"] = port
 		out["tls_error"] = errMsg
 		out["leaf_mode"] = mode
+		if info := s.sites.LeafCertInfo(); info != nil {
+			for k, v := range info {
+				out[k] = v
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCAIssue(w http.ResponseWriter, r *http.Request) {
-	if s.ca == nil {
-		writeErr(w, http.StatusServiceUnavailable, "este nó não é um emissor CA (só registries)")
+	if s.ca == nil || !s.ca.CanIssue() {
+		writeErr(w, http.StatusServiceUnavailable, "este registry não assina certificados (sem rootCA-key) — tente outro emissor na mesh")
 		return
 	}
 	if s.ledger == nil {
@@ -153,13 +163,24 @@ func (s *Server) handleCARenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	running, port, errMsg, mode := s.sites.TLSStatus()
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"ok":          true,
 		"tls_running": running,
 		"tls_port":    port,
 		"tls_error":   errMsg,
 		"tls_mode":    mode,
-	})
+	}
+	if info := s.sites.LeafCertInfo(); info != nil {
+		for k, v := range info {
+			out[k] = v
+		}
+		if caSigned, _ := info["leaf_ca_signed"].(bool); !caSigned {
+			writeErr(w, http.StatusBadGateway, "leaf ainda não assinado pela rootCA — registry emissor inacessível?")
+			return
+		}
+		out["tls_mode"] = "ca"
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) rootCAPEM() ([]byte, error) {

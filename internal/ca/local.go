@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -36,8 +37,28 @@ func (l *LocalIssuer) EnsureLeaf(domains []string, certDir string) error {
 	if err != nil {
 		return err
 	}
-	if leafOK(filepath.Join(certDir, LeafCertName), filepath.Join(certDir, LeafKeyName), domains, 7*24*time.Hour) {
+	rootPEM := l.RootPEM()
+	if leafOK(filepath.Join(certDir, LeafCertName), filepath.Join(certDir, LeafKeyName), domains, 7*24*time.Hour, rootPEM) {
 		return nil
+	}
+	return l.issueLeaf(domains, certDir)
+}
+
+// ForceEnsureLeaf always re-signs a leaf with the local CA.
+func (l *LocalIssuer) ForceEnsureLeaf(domains []string, certDir string) error {
+	_ = os.Remove(filepath.Join(certDir, LeafCertName))
+	_ = os.Remove(filepath.Join(certDir, LeafKeyName))
+	_ = os.Remove(filepath.Join(certDir, ChainName))
+	domains, err := NormalizeDomains(domains)
+	if err != nil {
+		return err
+	}
+	return l.issueLeaf(domains, certDir)
+}
+
+func (l *LocalIssuer) issueLeaf(domains []string, certDir string) error {
+	if l.Auth == nil {
+		return errNoAuth
 	}
 	keyPEM, csrPEM, err := GenerateLeafKeyAndCSR(domains)
 	if err != nil {

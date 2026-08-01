@@ -441,12 +441,12 @@
 
   <div class="card" style="margin-top:16px">
     <div class="card-head"><h2>Certificado HTTPS (CA BuscaLogo)</h2><span id="ca-badge" class="badge">—</span></div>
-    <p class="hint">A raiz fica no Registry; este Agent pede certificados assinados para seus domínios. Instale a CA no sistema para navegar em qualquer <code>.bl</code>/<code>.lo</code> sem aviso do navegador.</p>
+    <p class="hint">A raiz fica no Registry; este Agent descobre automaticamente quais registries <b>assinam</b> (<code>can_issue</code>) na mesh e pede o leaf só a eles. Use <b>Renovar certificado</b> com pelo menos um emissor online.</p>
     <p class="hint" id="ca-status-hint" style="margin-top:0"></p>
     <div class="actions">
-      <button id="ca-install-trust" class="btn green" type="button">Instalar CA no sistema</button>
+      <button id="ca-renew" class="btn green" type="button">Renovar certificado do site</button>
+      <button id="ca-install-trust" class="btn" type="button">Instalar CA no sistema</button>
       <a id="ca-download-root" class="btn" href="/api/ca/root" download="buscalogo-rootCA.pem">Baixar rootCA.pem</a>
-      <button id="ca-renew" class="btn" type="button">Renovar certificado do site</button>
       <button id="ca-refresh" class="btn small" type="button">Atualizar status</button>
     </div>
   </div>

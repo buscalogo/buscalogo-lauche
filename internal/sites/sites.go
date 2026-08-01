@@ -36,6 +36,11 @@ type CertIssuer interface {
 	RootPEM() []byte
 }
 
+// CertForcer re-emite leaf ignorando cache local (botão Renovar na UI).
+type CertForcer interface {
+	ForceEnsureLeaf(domains []string, certDir string) error
+}
+
 type Manager struct {
 	cfg          *config.Config
 	buf          *logx.Buffer
@@ -81,7 +86,8 @@ func (m *Manager) CachedRootPEM() []byte {
 	return b
 }
 
-// RenewTLSCert re-emite leaf (se CA) e reinicia HTTPS.
+// RenewTLSCert força reemissão do leaf pela CA do registry e reinicia HTTPS.
+// Diferente do boot: não aceita self-signed como sucesso.
 func (m *Manager) RenewTLSCert() error {
 	m.mu.RLock()
 	issuer := m.issuer
@@ -96,18 +102,37 @@ func (m *Manager) RenewTLSCert() error {
 			return err
 		}
 		domains := m.tlsDomains()
-		if err := issuer.EnsureLeaf(domains, dir); err != nil {
-			return err
+		var issueErr error
+		if forcer, ok := issuer.(CertForcer); ok {
+			issueErr = forcer.ForceEnsureLeaf(domains, dir)
+		} else {
+			certFile, keyFile, _ := m.certPaths()
+			_ = os.Remove(certFile)
+			_ = os.Remove(keyFile)
+			issueErr = issuer.EnsureLeaf(domains, dir)
 		}
-	} else {
-		// força regenerar self-signed
-		certFile, keyFile, err := m.certPaths()
-		if err != nil {
-			return err
+		if issueErr != nil {
+			return issueErr
 		}
-		_ = os.Remove(certFile)
-		_ = os.Remove(keyFile)
+		rootPEM := issuer.RootPEM()
+		if len(rootPEM) == 0 {
+			rootPEM, _ = issuer.EnsureRoot()
+		}
+		if !m.leafFileSignedByRoot(rootPEM) {
+			return fmt.Errorf("leaf no disco não está assinado pela rootCA — registry respondeu mas material inválido")
+		}
+		m.mu.Lock()
+		m.tlsMode = "ca"
+		m.mu.Unlock()
+		return m.Restart()
 	}
+	// força regenerar self-signed
+	certFile, keyFile, err := m.certPaths()
+	if err != nil {
+		return err
+	}
+	_ = os.Remove(certFile)
+	_ = os.Remove(keyFile)
 	return m.Restart()
 }
 

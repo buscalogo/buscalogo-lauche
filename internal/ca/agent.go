@@ -2,6 +2,7 @@ package ca
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -103,7 +104,16 @@ func (h *AgentHelper) EnsureRoot() ([]byte, error) {
 	return nil, fmt.Errorf("não foi possível obter rootCA de nenhum registry")
 }
 
+// ForceEnsureLeaf removes any local leaf and asks a registry to issue a new one.
+func (h *AgentHelper) ForceEnsureLeaf(domains []string, certDir string) error {
+	_ = os.Remove(filepath.Join(certDir, LeafCertName))
+	_ = os.Remove(filepath.Join(certDir, LeafKeyName))
+	_ = os.Remove(filepath.Join(certDir, ChainName))
+	return h.EnsureLeaf(domains, certDir)
+}
+
 // EnsureLeaf issues (or reuses) a leaf cert covering domains into certDir.
+// Reuses only if the existing leaf is signed by the BuscaLogo root CA.
 func (h *AgentHelper) EnsureLeaf(domains []string, certDir string) error {
 	domains, err := NormalizeDomains(domains)
 	if err != nil {
@@ -127,7 +137,13 @@ func (h *AgentHelper) EnsureLeaf(domains []string, certDir string) error {
 	}
 	certPath := filepath.Join(certDir, LeafCertName)
 	keyPath := filepath.Join(certDir, LeafKeyName)
-	if leafOK(certPath, keyPath, domains, renewBefore) {
+	rootPEM := h.RootPEM()
+	if len(rootPEM) == 0 {
+		if emb, ok := EmbeddedRootPEM(); ok {
+			rootPEM = emb
+		}
+	}
+	if leafOK(certPath, keyPath, domains, renewBefore, rootPEM) {
 		return nil
 	}
 	if h.SignKey == nil {
@@ -141,14 +157,23 @@ func (h *AgentHelper) EnsureLeaf(domains []string, certDir string) error {
 	if err != nil {
 		return err
 	}
+	bases := h.issueBases()
+	if len(bases) == 0 {
+		return fmt.Errorf("nenhum registry CA configurado — defina ca.issue_url ou registry.static_peers")
+	}
+	wantFP := expectedRootFingerprint(rootPEM)
+	issuers := h.discoverIssuers(bases, wantFP)
+	if len(issuers) == 0 {
+		return fmt.Errorf("nenhum registry emissor online (can_issue) com a rootCA da mesh — confira seeds com rootCA-key")
+	}
 	var lastErr error
-	for _, base := range h.issueBases() {
-		cli := &Client{BaseURL: base}
+	for _, iss := range issuers {
+		cli := &Client{BaseURL: iss.BaseURL}
 		resp, err := cli.Issue(priv, domains, csrPEM)
 		if err != nil {
 			lastErr = err
 			if h.Buf != nil {
-				h.Buf.Warnf("ca", "issue %s: %v", base, err)
+				h.Buf.Warnf("ca", "issue %s: %v", iss.BaseURL, err)
 			}
 			continue
 		}
@@ -163,8 +188,9 @@ func (h *AgentHelper) EnsureLeaf(domains []string, certDir string) error {
 		if roots := extractRootFromChain(chain); len(roots) > 0 {
 			_ = h.SetRootCache(roots)
 		}
+		_ = saveLastIssuerURL(iss.BaseURL)
 		if h.Buf != nil {
-			h.Buf.Infof("ca", "leaf emitido por %s para %v", base, domains)
+			h.Buf.Infof("ca", "leaf emitido por %s (fp=%s lat=%s) para %v", iss.BaseURL, iss.Fingerprint, iss.Latency.Truncate(time.Millisecond), domains)
 		}
 		return nil
 	}
@@ -185,8 +211,15 @@ func (h *AgentHelper) issueBases() []string {
 		seen[u] = true
 		out = append(out, u)
 	}
+	// Prefer last successful issuer, then explicit config, then hints / mesh.
+	if u := loadLastIssuerURL(); u != "" {
+		add(u)
+	}
 	if h.Cfg != nil {
 		add(h.Cfg.CA.IssueURL)
+	}
+	for _, ip := range loadPreferredIssuerIPs() {
+		add(BaseURLFromYgg(ip, 9970))
 	}
 	if h.Resolve != nil {
 		for _, u := range h.Resolve() {
@@ -198,13 +231,89 @@ func (h *AgentHelper) issueBases() []string {
 			add(BaseURLFromYgg(ip, 9970))
 		}
 	}
+	for _, ip := range loadKnownRegistryIPs() {
+		add(BaseURLFromYgg(ip, 9970))
+	}
 	if ip := strings.TrimSpace(config.DefaultRegistryYggIP); ip != "" {
 		add(BaseURLFromYgg(ip, 9970))
 	}
 	return out
 }
 
-func leafOK(certPath, keyPath string, wantDomains []string, renewBefore time.Duration) bool {
+// discoverIssuers probes candidates in parallel and keeps only nodes that
+// advertise can_issue with the mesh root fingerprint.
+func (h *AgentHelper) discoverIssuers(bases []string, wantFP string) []IssuerProbe {
+	type result struct {
+		idx int
+		p   *IssuerProbe
+	}
+	ch := make(chan result, len(bases))
+	for i, base := range bases {
+		i, base := i, base
+		go func() {
+			cli := &Client{BaseURL: base}
+			p, _ := cli.ProbeStatus()
+			if p == nil {
+				p = &IssuerProbe{BaseURL: base, Err: fmt.Errorf("probe nil")}
+			}
+			ch <- result{idx: i, p: p}
+		}()
+	}
+	probes := make([]*IssuerProbe, len(bases))
+	for range bases {
+		r := <-ch
+		probes[r.idx] = r.p
+	}
+	var issuers []IssuerProbe
+	for _, p := range probes {
+		if p == nil || p.Err != nil {
+			if h.Buf != nil && p != nil && p.Err != nil {
+				h.Buf.Warnf("ca", "probe %s: %v", p.BaseURL, p.Err)
+			}
+			continue
+		}
+		if !p.CanIssue {
+			if h.Buf != nil {
+				h.Buf.Infof("ca", "registry %s online mas não assina (can_issue=false)", p.BaseURL)
+			}
+			continue
+		}
+		if wantFP != "" && p.Fingerprint != "" && p.Fingerprint != wantFP {
+			if h.Buf != nil {
+				h.Buf.Warnf("ca", "registry %s fingerprint divergente (got=%s want=%s) — ignorado", p.BaseURL, p.Fingerprint, wantFP)
+			}
+			continue
+		}
+		issuers = append(issuers, *p)
+	}
+	if h.Buf != nil {
+		h.Buf.Infof("ca", "emissores aptos: %d de %d candidatos", len(issuers), len(bases))
+	}
+	return issuers
+}
+
+func expectedRootFingerprint(rootPEM []byte) string {
+	if len(rootPEM) == 0 {
+		if emb, ok := EmbeddedRootPEM(); ok {
+			rootPEM = emb
+		}
+	}
+	if len(rootPEM) == 0 {
+		return ""
+	}
+	block, _ := pem.Decode(rootPEM)
+	if block == nil {
+		return ""
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func leafOK(certPath, keyPath string, wantDomains []string, renewBefore time.Duration, rootPEM []byte) bool {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return false
@@ -223,6 +332,10 @@ func leafOK(certPath, keyPath string, wantDomains []string, renewBefore time.Dur
 	if time.Until(cert.NotAfter) < renewBefore {
 		return false
 	}
+	// Self-signed / unknown issuer must never count as a mesh CA leaf.
+	if len(rootPEM) == 0 || !leafSignedByRoot(cert, rootPEM) {
+		return false
+	}
 	have := map[string]bool{}
 	for _, d := range cert.DNSNames {
 		have[strings.ToLower(d)] = true
@@ -233,6 +346,22 @@ func leafOK(certPath, keyPath string, wantDomains []string, renewBefore time.Dur
 		}
 	}
 	return true
+}
+
+func leafSignedByRoot(cert *x509.Certificate, rootPEM []byte) bool {
+	if cert == nil || len(rootPEM) == 0 {
+		return false
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(rootPEM) {
+		return false
+	}
+	opts := x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	if len(cert.DNSNames) > 0 {
+		opts.DNSName = cert.DNSNames[0]
+	}
+	_, err := cert.Verify(opts)
+	return err == nil
 }
 
 func extractRootFromChain(chain []byte) []byte {

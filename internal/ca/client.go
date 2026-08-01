@@ -46,6 +46,56 @@ func (c *Client) FetchRoot() ([]byte, error) {
 	return body, nil
 }
 
+// IssuerProbe is the result of GET /api/ca/status on a candidate registry.
+type IssuerProbe struct {
+	BaseURL     string
+	CanIssue    bool
+	Fingerprint string
+	Err         error
+	Latency     time.Duration
+}
+
+// ProbeStatus checks whether a registry can issue certificates for this mesh.
+func (c *Client) ProbeStatus() (*IssuerProbe, error) {
+	start := time.Now()
+	out := &IssuerProbe{BaseURL: c.BaseURL}
+	cli := c.http()
+	// Short probe timeout — many peers, few issuers.
+	if cli.Timeout == 0 || cli.Timeout > 4*time.Second {
+		cp := *cli
+		cp.Timeout = 4 * time.Second
+		cli = &cp
+	}
+	resp, err := cli.Get(strings.TrimRight(c.BaseURL, "/") + "/api/ca/status")
+	out.Latency = time.Since(start)
+	if err != nil {
+		out.Err = err
+		return out, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		out.Err = err
+		return out, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		out.Err = fmt.Errorf("GET /api/ca/status: %s", resp.Status)
+		return out, out.Err
+	}
+	var st struct {
+		CanIssue         bool   `json:"can_issue"`
+		Ready            bool   `json:"ready"`
+		FingerprintSHA256 string `json:"fingerprint_sha256"`
+	}
+	if err := json.Unmarshal(body, &st); err != nil {
+		out.Err = err
+		return out, err
+	}
+	out.CanIssue = st.CanIssue || st.Ready
+	out.Fingerprint = strings.ToLower(strings.TrimSpace(st.FingerprintSHA256))
+	return out, nil
+}
+
 // Issue requests a leaf certificate signed by the registry CA.
 func (c *Client) Issue(priv ed25519.PrivateKey, domains []string, csrPEM []byte) (*IssueResponse, error) {
 	domains, err := NormalizeDomains(domains)

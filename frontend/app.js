@@ -67,19 +67,31 @@ async function refreshCAStatus() {
     const j = await r.json();
     const trust = !!j.system_trust_installed;
     const mode = j.leaf_mode || "—";
+    const caOK = mode === "ca";
     if (badge) {
-      badge.textContent = trust ? "CA no sistema" : "CA pendente";
-      badge.className = "badge " + (trust ? "green" : "");
+      if (caOK && trust) {
+        badge.textContent = "HTTPS CA ok";
+        badge.className = "badge green";
+      } else if (caOK) {
+        badge.textContent = "Leaf CA — instale raiz";
+        badge.className = "badge";
+      } else if (trust) {
+        badge.textContent = "Self-signed — renovar";
+        badge.className = "badge";
+      } else {
+        badge.textContent = "CA pendente";
+        badge.className = "badge";
+      }
     }
     if (hint) {
       const parts = [];
-      parts.push(trust ? "Raiz instalada no trust store do SO." : "Raiz ainda não instalada no SO.");
-      if (j.root_available || j.ready) parts.push("rootCA disponível para download.");
-      if (mode) parts.push(`HTTPS mode=${mode}.`);
+      parts.push(trust ? "Raiz no trust store do SO." : "Raiz ainda não instalada no SO.");
+      parts.push(`HTTPS mode=${mode}.`);
+      if (j.leaf_issuer) parts.push(`Issuer: ${j.leaf_issuer}.`);
+      if (Array.isArray(j.leaf_dns) && j.leaf_dns.length) parts.push(`SAN: ${j.leaf_dns.join(", ")}.`);
       if (j.tls_error) parts.push(`TLS: ${j.tls_error}`);
-      if (j.subject) parts.push(`Emissor: ${j.subject}`);
       hint.textContent = parts.join(" ");
-      hint.style.color = trust ? "" : "var(--amber)";
+      hint.style.color = caOK && trust ? "" : "var(--amber)";
     }
   } catch (e) {
     if (hint) hint.textContent = "Não foi possível ler status da CA.";
@@ -2101,15 +2113,26 @@ document.addEventListener("click", (ev) => {
   }
   if (ev.target.id === "ca-renew") {
     (async () => {
+      const btn = ev.target;
+      const prev = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Renovando…";
       try {
         const r = await fetch("/api/ca/renew", { method: "POST" });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.error || r.statusText);
-        toast("Certificado renovado (mode=" + (j.tls_mode || "?") + ")");
+        if (j.leaf_ca_signed !== true && j.tls_mode !== "ca") {
+          throw new Error(j.error || "leaf ainda self-signed — registry emissor offline?");
+        }
+        toast("Certificado CA aplicado");
         fetchStatus();
         refreshCAStatus();
       } catch (e) {
-        toast("Falha ao renovar: " + e.message, 4000);
+        toast("Falha ao renovar: " + e.message, 6000);
+        refreshCAStatus();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
       }
     })();
   }

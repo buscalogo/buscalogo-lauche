@@ -32,6 +32,70 @@ func (m *Manager) TLSStatus() (running bool, port int, errMsg, mode string) {
 	return m.tlsRunning, m.tlsPort, m.tlsError, m.tlsMode
 }
 
+// LeafCertInfo devolve issuer/subject/SANs do site.crt atual (para a UI).
+func (m *Manager) LeafCertInfo() map[string]any {
+	certFile, _, err := m.certPaths()
+	if err != nil {
+		return nil
+	}
+	raw, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	return map[string]any{
+		"leaf_issuer":    cert.Issuer.String(),
+		"leaf_subject":   cert.Subject.String(),
+		"leaf_dns":       cert.DNSNames,
+		"leaf_not_after": cert.NotAfter.UTC().Format(time.RFC3339),
+		"leaf_ca_signed": m.leafFileSignedByRoot(m.CachedRootPEM()),
+	}
+}
+
+func (m *Manager) leafFileSignedByRoot(rootPEM []byte) bool {
+	if len(rootPEM) == 0 {
+		if emb, ok := ca.EmbeddedRootPEM(); ok {
+			rootPEM = emb
+		}
+	}
+	if len(rootPEM) == 0 {
+		return false
+	}
+	certFile, _, err := m.certPaths()
+	if err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(certFile)
+	if err != nil {
+		return false
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(rootPEM) {
+		return false
+	}
+	opts := x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	if len(cert.DNSNames) > 0 {
+		opts.DNSName = cert.DNSNames[0]
+	}
+	_, err = cert.Verify(opts)
+	return err == nil
+}
+
 func (m *Manager) certDir() (string, error) {
 	dir := m.cfg.Web.TLS.CertDir
 	if dir != "" {

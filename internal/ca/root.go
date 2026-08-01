@@ -74,25 +74,48 @@ func (a *Authority) FingerprintSHA256() string {
 	return fmt.Sprintf("%x", sum[:])
 }
 
-// LoadRoot loads an existing root CA from dir.
+// LoadRoot loads an existing root CA from dir (requires cert + private key).
 func LoadRoot(dir string) (*Authority, error) {
-	certPEM, err := os.ReadFile(filepath.Join(dir, RootCertName))
+	auth, err := LoadMeshCA(dir)
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(dir, RootKeyName))
+	if !auth.CanIssue() {
+		return nil, fmt.Errorf("CA incompleta em %s (falta %s) — só registries emissores precisam da chave", dir, RootKeyName)
+	}
+	return auth, nil
+}
+
+// LoadMeshCA loads rootCA.pem and, se existir, rootCA-key.pem.
+// Registries espelho podem ter só o PEM público (CanIssue=false).
+func LoadMeshCA(dir string) (*Authority, error) {
+	certPEM, err := os.ReadFile(filepath.Join(dir, RootCertName))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("CA canônica ausente em %s — copie rootCA.pem desta malha", dir)
 	}
 	cert, err := parseCertPEM(certPEM)
 	if err != nil {
 		return nil, fmt.Errorf("rootCA.pem: %w", err)
 	}
+	auth := &Authority{Dir: dir, Cert: cert, PEM: certPEM}
+	keyPEM, err := os.ReadFile(filepath.Join(dir, RootKeyName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return auth, nil
+		}
+		return nil, fmt.Errorf("rootCA-key.pem: %w", err)
+	}
 	key, err := parseECKeyPEM(keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("rootCA-key.pem: %w", err)
 	}
-	return &Authority{Dir: dir, Cert: cert, Key: key, PEM: certPEM}, nil
+	auth.Key = key
+	return auth, nil
+}
+
+// CanIssue reports whether this node holds the private key and can sign leaves.
+func (a *Authority) CanIssue() bool {
+	return a != nil && a.Cert != nil && a.Key != nil
 }
 
 // GenerateRoot creates a new ECDSA P-256 root CA.
@@ -152,7 +175,7 @@ func GenerateRoot(dir string) (*Authority, error) {
 // SignCSR signs a CSR for the given DNS SANs (must be non-empty).
 func (a *Authority) SignCSR(csrPEM []byte, dnsNames []string, ttl time.Duration) (certPEM, chainPEM []byte, err error) {
 	if a == nil || a.Cert == nil || a.Key == nil {
-		return nil, nil, fmt.Errorf("CA não inicializada")
+		return nil, nil, fmt.Errorf("este nó não tem chave CA — não assina certificados")
 	}
 	if len(dnsNames) == 0 {
 		return nil, nil, fmt.Errorf("nenhum DNS SAN")
@@ -200,10 +223,16 @@ func (a *Authority) SignCSR(csrPEM []byte, dnsNames []string, ttl time.Duration)
 // Status returns public CA metadata.
 func (a *Authority) Status() map[string]any {
 	if a == nil || a.Cert == nil {
-		return map[string]any{"ready": false}
+		return map[string]any{
+			"ready":          false,
+			"can_issue":      false,
+			"root_available": false,
+		}
 	}
 	return map[string]any{
-		"ready":              true,
+		"ready":              a.CanIssue(),
+		"can_issue":          a.CanIssue(),
+		"root_available":     true,
 		"subject":            a.Cert.Subject.String(),
 		"not_before":         a.Cert.NotBefore.UTC().Format(time.RFC3339),
 		"not_after":          a.Cert.NotAfter.UTC().Format(time.RFC3339),

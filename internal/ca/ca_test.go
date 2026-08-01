@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -87,6 +88,31 @@ func TestIssueRequestSignVerify(t *testing.T) {
 	}
 	if err := ca.VerifyIssueRequest(pub, []string{"a.bl"}, csrPEM, ts-ca.IssueSkew.Milliseconds()-1000, sig); err == nil {
 		t.Fatal("expected skew error")
+	}
+}
+
+func TestLoadMeshCAWithoutKey(t *testing.T) {
+	dir := t.TempDir()
+	auth, err := ca.EnsureRootAllowGenerate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, ca.RootKeyName)
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ca.LoadMeshCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CanIssue() {
+		t.Fatal("expected CanIssue=false without key")
+	}
+	if loaded.FingerprintSHA256() != auth.FingerprintSHA256() {
+		t.Fatal("fingerprint mismatch")
+	}
+	if _, err := ca.LoadRoot(dir); err == nil {
+		t.Fatal("LoadRoot should require key")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -206,22 +207,27 @@ func runAgent(stop <-chan struct{}, headless bool) error {
 		},
 		Resolve: func() []string {
 			var urls []string
+			seen := map[string]bool{}
+			add := func(ip string) {
+				ip = strings.TrimSpace(ip)
+				if ip == "" || seen[ip] {
+					return
+				}
+				seen[ip] = true
+				urls = append(urls, ca.BaseURLFromYgg(ip, 9970))
+			}
 			if domainGossip != nil {
+				// Inclui stale/offline: a API :9970 do registry pode responder mesmo assim.
 				for _, p := range domainGossip.ListRegistries() {
-					if p.YggIP == "" {
-						continue
-					}
-					if p.Status == p2pdomain.StatusOffline {
-						continue
-					}
-					urls = append(urls, ca.BaseURLFromYgg(p.YggIP, 9970))
+					add(p.YggIP)
 				}
 			}
 			return urls
 		},
 		FilterDomains: func(domains []string) []string {
 			if ledgerEng == nil {
-				return nil
+				// Sem ledger local: envia os hosts dos Sites; o registry valida ownership.
+				return domains
 			}
 			priv, err := acct.SigningKey()
 			if err != nil {
@@ -232,6 +238,8 @@ func runAgent(stop <-chan struct{}, headless bool) error {
 			for _, d := range domains {
 				dns, err := ledgerEng.Store().GetDNS(d)
 				if err != nil || dns == nil {
+					// Ausente no ledger local (sync atrasado) — deixa o registry decidir.
+					out = append(out, d)
 					continue
 				}
 				if len(dns.Owner) == len(pub) {
