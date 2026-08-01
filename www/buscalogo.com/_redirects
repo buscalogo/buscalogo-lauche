@@ -1,0 +1,4 @@
+# Cloudflare Pages / Netlify: SPA fallback.
+# Arquivos que existem em /assets etc. têm prioridade; rotas como /search
+# caem no index.html. Sem isso, /search quebra o Vue Router em hosts estáticos.
+/*    /index.html   200

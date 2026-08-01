@@ -1,0 +1,17 @@
+{
+  "updated_at": "2026-08-01T18:00:00Z",
+  "registries": [
+    {
+      "ygg_ip": "200:63ac:4c32:e7f3:4db2:9c6e:6f3d:d088",
+      "name": "seed-principal",
+      "note": "registry seed público BuscaLogo (emissor CA)",
+      "ca_issuer": true
+    },
+    {
+      "ygg_ip": "201:3f53:115c:1732:1801:bf7:8354:1acc",
+      "name": "registry-akira",
+      "note": "registry na mesh (descoberta + bootstrap)",
+      "ca_issuer": true
+    }
+  ]
+}
