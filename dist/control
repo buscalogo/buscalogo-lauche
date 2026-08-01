@@ -4,8 +4,11 @@ Section: net
 Priority: optional
 Architecture: amd64
 Depends: libappindicator3-1 | libayatana-appindicator3-1, libgtk-3-0, libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37
+Recommends: libnss3-tools
 Maintainer: BuscaLogo <contato@buscalogo.com>
 Description: BuscaLogo Agent
  Agente local para hospedagem de sites .bl, DNS CoreDNS,
  Yggdrasil, CouchDB, scraper e painel de gerenciamento.
  Inclui interface desktop nativa (Neutralinojs).
+ Instala a CA raiz no sistema e (com libnss3-tools) no NSS
+ de Firefox/Chrome/Brave para HTTPS .bl/.lo.

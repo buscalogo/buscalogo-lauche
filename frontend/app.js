@@ -66,12 +66,17 @@ async function refreshCAStatus() {
     const r = await fetch("/api/ca/status");
     const j = await r.json();
     const trust = !!j.system_trust_installed;
+    const browserTrust = !!j.browser_trust_installed;
+    const appTrust = !!j.app_trust_installed;
     const mode = j.leaf_mode || "—";
     const caOK = mode === "ca";
     if (badge) {
-      if (caOK && trust) {
+      if (caOK && trust && browserTrust && appTrust) {
         badge.textContent = "HTTPS CA ok";
         badge.className = "badge green";
+      } else if (caOK && trust) {
+        badge.textContent = "Leaf CA — instale nos apps";
+        badge.className = "badge";
       } else if (caOK) {
         badge.textContent = "Leaf CA — instale raiz";
         badge.className = "badge";
@@ -85,13 +90,17 @@ async function refreshCAStatus() {
     }
     if (hint) {
       const parts = [];
-      parts.push(trust ? "Raiz no trust store do SO." : "Raiz ainda não instalada no SO.");
+      parts.push(trust ? "Raiz no SO." : "Raiz ainda não no SO.");
+      parts.push(browserTrust
+        ? `NSS navegadores (${(j.browser_profiles || []).length || "ok"}).`
+        : "NSS navegadores pendente.");
+      parts.push(appTrust ? "IDEs/CLIs (Cursor/VS Code/Trae/Node) ok." : "IDEs/CLIs pendente.");
       parts.push(`HTTPS mode=${mode}.`);
       if (j.leaf_issuer) parts.push(`Issuer: ${j.leaf_issuer}.`);
       if (Array.isArray(j.leaf_dns) && j.leaf_dns.length) parts.push(`SAN: ${j.leaf_dns.join(", ")}.`);
       if (j.tls_error) parts.push(`TLS: ${j.tls_error}`);
       hint.textContent = parts.join(" ");
-      hint.style.color = caOK && trust ? "" : "var(--amber)";
+      hint.style.color = caOK && trust && browserTrust && appTrust ? "" : "var(--amber)";
     }
   } catch (e) {
     if (hint) hint.textContent = "Não foi possível ler status da CA.";
@@ -2158,7 +2167,13 @@ document.addEventListener("click", (ev) => {
         const r = await fetch("/api/ca/install-trust", { method: "POST" });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.error || r.statusText);
-        toast("CA instalada no sistema");
+        const bits = [];
+        if (j.system_trust_installed) bits.push("SO");
+        else if (j.system_warning) bits.push("SO falhou");
+        if (Array.isArray(j.browsers) && j.browsers.length) bits.push(`NSS×${j.browsers.length}`);
+        else if (j.browsers_warning) bits.push("NSS pendente");
+        if (Array.isArray(j.apps) && j.apps.length) bits.push(`IDEs/CLIs×${j.apps.length}`);
+        toast("CA: " + (bits.join(" + ") || "ok") + " — reinicie navegadores e IDEs", 6000);
         refreshCAStatus();
       } catch (e) {
         toast("Falha ao instalar CA: " + e.message, 4000);

@@ -260,6 +260,33 @@ func runAgent(stop <-chan struct{}, headless bool) error {
 	}
 	sitesMgr.SetCertIssuer(caHelper)
 
+	// Trust user-space: NSS (Firefox/Brave) + NODE_EXTRA_CA_CERTS (Cursor/VS Code/Trae/Node) + bundle OpenSSL (Zed/curl).
+	go func() {
+		pem := caHelper.RootPEM()
+		if len(pem) == 0 {
+			var err error
+			pem, err = caHelper.EnsureRoot()
+			if err != nil || len(pem) == 0 {
+				if emb, ok := ca.EmbeddedRootPEM(); ok {
+					pem = emb
+					_ = caHelper.SetRootCache(emb)
+				}
+			}
+		}
+		if len(pem) == 0 {
+			return
+		}
+		if ca.BrowserTrustInstalled() && ca.AppTrustInstalled() {
+			return
+		}
+		res, err := ca.InstallUserTrust(buf, pem)
+		if err != nil {
+			buf.Warnf("ca", "auto-install trust user-space: %v", err)
+			return
+		}
+		buf.Infof("ca", "rootCA user-space: NSS=%d apps=%d — reinicie navegadores/IDEs se HTTPS .bl falhar", len(res.Browsers), len(res.Apps))
+	}()
+
 	srv := api.New(cfg, buf, cdns, ygg, cdb, scr, acct, p2pConn, dnsMgr, sitesMgr, updater, ledgerEng, domainGossip)
 	updater.StartBackground()
 

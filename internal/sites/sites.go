@@ -88,6 +88,8 @@ func (m *Manager) CachedRootPEM() []byte {
 
 // RenewTLSCert força reemissão do leaf pela CA do registry e reinicia HTTPS.
 // Diferente do boot: não aceita self-signed como sucesso.
+// Se houver CertIssuer, sempre tenta CA — mesmo com web.tls.mode=self_signed
+// (a UI "Renovar certificado" não deve regenerar self-signed).
 func (m *Manager) RenewTLSCert() error {
 	m.mu.RLock()
 	issuer := m.issuer
@@ -96,7 +98,7 @@ func (m *Manager) RenewTLSCert() error {
 	if mode == "" {
 		mode = "ca"
 	}
-	if mode == "ca" && issuer != nil {
+	if issuer != nil {
 		dir, err := m.certDir()
 		if err != nil {
 			return err

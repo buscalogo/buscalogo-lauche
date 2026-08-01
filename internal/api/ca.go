@@ -29,9 +29,12 @@ func (s *Server) handleCARoot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCAStatus(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
-		"system_trust_installed": ca.SystemTrustInstalled(),
-		"leaf_mode":              "",
-		"tls_running":            false,
+		"system_trust_installed":  ca.SystemTrustInstalled(),
+		"browser_trust_installed": ca.BrowserTrustInstalled(),
+		"browser_profiles":        ca.BrowserTrustProfiles(),
+		"app_trust_installed":     ca.AppTrustInstalled(),
+		"leaf_mode":               "",
+		"tls_running":             false,
 	}
 	if s.ca != nil {
 		for k, v := range s.ca.Status() {
@@ -142,15 +145,36 @@ func (s *Server) handleCAInstallTrust(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "rootCA.pem indisponível — sincronize com um registry ou reinstale o Agent")
 		return
 	}
-	if err := ca.InstallSystemTrust(s.buf, pemBytes); err != nil {
-		writeErr(w, http.StatusInternalServerError, "%v", err)
+	sysErr := ca.InstallSystemTrust(s.buf, pemBytes)
+	user, userErr := ca.InstallUserTrust(s.buf, pemBytes)
+	if sysErr != nil && userErr != nil && len(user.Browsers) == 0 && len(user.Apps) == 0 {
+		writeErr(w, http.StatusInternalServerError, "sistema: %v; apps: %v", sysErr, userErr)
 		return
 	}
-	s.buf.Infof("ca", "rootCA instalada no trust store do sistema")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                     true,
-		"system_trust_installed": ca.SystemTrustInstalled(),
-	})
+	out := map[string]any{
+		"ok":                      true,
+		"system_trust_installed":  ca.SystemTrustInstalled(),
+		"browser_trust_installed": ca.BrowserTrustInstalled(),
+		"app_trust_installed":     ca.AppTrustInstalled(),
+		"browsers":                user.Browsers,
+		"apps":                    user.Apps,
+		"env_file":                user.EnvFile,
+		"cert_file":               user.CertFile,
+		"bundle":                  user.Bundle,
+	}
+	if sysErr != nil {
+		out["system_warning"] = sysErr.Error()
+		s.buf.Warnf("ca", "trust store SO: %v", sysErr)
+	} else {
+		s.buf.Infof("ca", "rootCA instalada no trust store do sistema")
+	}
+	if userErr != nil {
+		out["browsers_warning"] = userErr.Error()
+		s.buf.Warnf("ca", "trust user/NSS: %v", userErr)
+	} else {
+		s.buf.Infof("ca", "rootCA user-space: NSS=%d apps=%d", len(user.Browsers), len(user.Apps))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCARenew(w http.ResponseWriter, r *http.Request) {
