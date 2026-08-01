@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -488,6 +489,49 @@ func applyRegistryDefaults(r *Registry) {
 	}
 }
 
+// DualStackAPIListen normaliza o bind da API para aceitar IPv4 e IPv6 (Ygg).
+// Em Linux, net.Listen("tcp", "0.0.0.0:port") é só IPv4; "[::]:port" costuma ser dual-stack.
+func DualStackAPIListen(listen string) string {
+	listen = strings.TrimSpace(listen)
+	port := "9970"
+	host := ""
+	if listen == "" {
+		return "[::]:" + port
+	}
+	if h, p, err := net.SplitHostPort(listen); err == nil {
+		host = h
+		if p != "" {
+			port = p
+		}
+	} else if strings.HasPrefix(listen, ":") {
+		port = strings.TrimPrefix(listen, ":")
+		if port == "" {
+			port = "9970"
+		}
+		return "[::]:" + port
+	} else {
+		// "9970" ou host sem porta — assume porta padrão.
+		if strings.Count(listen, ":") == 0 && !strings.Contains(listen, ".") {
+			port = listen
+			return "[::]:" + port
+		}
+		return listen
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]", "127.0.0.1", "localhost", "::1":
+		// Registry público: dual-stack. Loopback legado do agent vira [::] só quando
+		// ApplyRegistryNodeDefaults chama isto — agents locais mantêm 127.0.0.1 via Load.
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			// Chamadores de registry reescrevem loopback → público; agents não usam esta fn
+			// no caminho padrão. Aqui tratamos 127 como “precisa ser público na mesh”.
+			return "[::]:" + port
+		}
+		return "[::]:" + port
+	default:
+		return net.JoinHostPort(host, port)
+	}
+}
+
 // ApplyRegistryNodeDefaults força o perfil do nó seed público (sem scraper/Couch/P2P busca).
 func (c *Config) ApplyRegistryNodeDefaults() error {
 	c.mu.Lock()
@@ -501,16 +545,13 @@ func (c *Config) ApplyRegistryNodeDefaults() error {
 	c.Yggdrasil.Enabled = true
 	c.DNS.Enabled = true
 	c.Web.ExternalListen = true
-	if c.Web.Listen == "" || c.Web.Listen == "127.0.0.1" {
+	if c.Web.Listen == "" || c.Web.Listen == "127.0.0.1" || c.Web.Listen == "0.0.0.0" {
+		// Sites já fazem dual-stack via [::]; manter 0.0.0.0 aqui é só fallback legado.
 		c.Web.Listen = "0.0.0.0"
 	}
-	if c.API.Listen == "" || strings.HasPrefix(c.API.Listen, "127.0.0.1:") {
-		port := "9970"
-		if _, p, ok := strings.Cut(c.API.Listen, ":"); ok && p != "" {
-			port = p
-		}
-		c.API.Listen = "0.0.0.0:" + port
-	}
+	// API precisa aceitar IPv6 Ygg: Agents pedem CA em http://[200:…]:9970.
+	// 0.0.0.0 é só IPv4 — emissores ficavam "offline" na mesh mesmo com gossip :4401 ok.
+	c.API.Listen = DualStackAPIListen(c.API.Listen)
 	if c.Node.Name == "" || c.Node.Name == "buscalogo" {
 		c.Node.Name = "buscalogo-registry"
 	}

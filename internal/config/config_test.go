@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+func TestDualStackAPIListen(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", "[::]:9970"},
+		{"0.0.0.0:9970", "[::]:9970"},
+		{"127.0.0.1:9970", "[::]:9970"},
+		{"[::]:9970", "[::]:9970"},
+		{":9988", "[::]:9988"},
+		{"192.0.2.1:9970", "192.0.2.1:9970"},
+	}
+	for _, tc := range cases {
+		got := DualStackAPIListen(tc.in)
+		if got != tc.want {
+			t.Fatalf("DualStackAPIListen(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestMergeJSON(t *testing.T) {
 	c := Default()
 	if c.Web.Port != 80 {

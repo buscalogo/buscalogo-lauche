@@ -329,7 +329,16 @@ func (s *Server) routes(mux *http.ServeMux) {
 }
 
 func (s *Server) ListenAndServe() error {
-	s.buf.Infof("api", "API ouvindo em http://%s", s.cfg.API.Listen)
+	addr := strings.TrimSpace(s.cfg.API.Listen)
+	// Registry com 0.0.0.0 legado: promove a dual-stack para CA/gossip HTTP na mesh Ygg.
+	if strings.HasPrefix(addr, "0.0.0.0:") || addr == "0.0.0.0" {
+		addr = config.DualStackAPIListen(addr)
+		s.cfg.API.Listen = addr
+		if s.srv != nil {
+			s.srv.Addr = addr
+		}
+	}
+	s.buf.Infof("api", "API ouvindo em http://%s", addr)
 	return s.srv.ListenAndServe()
 }
 

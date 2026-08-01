@@ -162,9 +162,13 @@ func (h *AgentHelper) EnsureLeaf(domains []string, certDir string) error {
 		return fmt.Errorf("nenhum registry CA configurado — defina ca.issue_url ou registry.static_peers")
 	}
 	wantFP := expectedRootFingerprint(rootPEM)
-	issuers := h.discoverIssuers(bases, wantFP)
+	issuers, probeNotes := h.discoverIssuers(bases, wantFP)
 	if len(issuers) == 0 {
-		return fmt.Errorf("nenhum registry emissor online (can_issue) com a rootCA da mesh — confira seeds com rootCA-key")
+		detail := strings.Join(probeNotes, "; ")
+		if detail == "" {
+			detail = fmt.Sprintf("%d candidato(s) sem resposta can_issue", len(bases))
+		}
+		return fmt.Errorf("nenhum registry emissor online (can_issue) com a rootCA da mesh — %s", detail)
 	}
 	var lastErr error
 	for _, iss := range issuers {
@@ -242,7 +246,8 @@ func (h *AgentHelper) issueBases() []string {
 
 // discoverIssuers probes candidates in parallel and keeps only nodes that
 // advertise can_issue with the mesh root fingerprint.
-func (h *AgentHelper) discoverIssuers(bases []string, wantFP string) []IssuerProbe {
+// Returns apt issuers and short notes about rejected/unreachable candidates.
+func (h *AgentHelper) discoverIssuers(bases []string, wantFP string) ([]IssuerProbe, []string) {
 	type result struct {
 		idx int
 		p   *IssuerProbe
@@ -265,10 +270,20 @@ func (h *AgentHelper) discoverIssuers(bases []string, wantFP string) []IssuerPro
 		probes[r.idx] = r.p
 	}
 	var issuers []IssuerProbe
+	var notes []string
+	addNote := func(s string) {
+		if len(notes) >= 6 {
+			return
+		}
+		notes = append(notes, s)
+	}
 	for _, p := range probes {
 		if p == nil || p.Err != nil {
-			if h.Buf != nil && p != nil && p.Err != nil {
-				h.Buf.Warnf("ca", "probe %s: %v", p.BaseURL, p.Err)
+			if p != nil && p.Err != nil {
+				if h.Buf != nil {
+					h.Buf.Warnf("ca", "probe %s: %v", p.BaseURL, p.Err)
+				}
+				addNote(fmt.Sprintf("%s inacessível", shortenBase(p.BaseURL)))
 			}
 			continue
 		}
@@ -276,12 +291,14 @@ func (h *AgentHelper) discoverIssuers(bases []string, wantFP string) []IssuerPro
 			if h.Buf != nil {
 				h.Buf.Infof("ca", "registry %s online mas não assina (can_issue=false)", p.BaseURL)
 			}
+			addNote(fmt.Sprintf("%s can_issue=false", shortenBase(p.BaseURL)))
 			continue
 		}
 		if wantFP != "" && p.Fingerprint != "" && p.Fingerprint != wantFP {
 			if h.Buf != nil {
 				h.Buf.Warnf("ca", "registry %s fingerprint divergente (got=%s want=%s) — ignorado", p.BaseURL, p.Fingerprint, wantFP)
 			}
+			addNote(fmt.Sprintf("%s fp divergente", shortenBase(p.BaseURL)))
 			continue
 		}
 		issuers = append(issuers, *p)
@@ -289,7 +306,15 @@ func (h *AgentHelper) discoverIssuers(bases []string, wantFP string) []IssuerPro
 	if h.Buf != nil {
 		h.Buf.Infof("ca", "emissores aptos: %d de %d candidatos", len(issuers), len(bases))
 	}
-	return issuers
+	return issuers, notes
+}
+
+func shortenBase(u string) string {
+	u = strings.TrimPrefix(strings.TrimPrefix(u, "http://"), "https://")
+	if len(u) > 48 {
+		return u[:45] + "…"
+	}
+	return u
 }
 
 func expectedRootFingerprint(rootPEM []byte) string {
