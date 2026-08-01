@@ -44,6 +44,7 @@ echo ">> Versão atual: $CUR"
 echo ">> Nova versão:  $NEW ($TAG)"
 echo ">> CI vai publicar:"
 echo "   - buscalogo-agent_${NEW}_amd64.deb (+ MSI / extensões)"
+echo "   - buscalogo-agent-server_${NEW}_amd64.deb  ← headless + systemd"
 echo "   - buscalogo-registry_${NEW}_linux_amd64 / _linux_arm64  ← binários"
 echo "   - buscalogo-registry_${NEW}_amd64.deb / _arm64.deb     ← systemd"
 echo "   - manifest.json"
@@ -84,6 +85,7 @@ Release ${NEW}.
 
 Bump VERSION for GitHub Actions to build and publish:
 - buscalogo-agent_${NEW}_amd64.deb
+- buscalogo-agent-server_${NEW}_amd64.deb (systemd headless)
 - buscalogo-registry_${NEW}_{amd64,arm64}.deb (systemd)
 - buscalogo-registry_${NEW}_linux_{amd64,arm64} (binário)
 EOF

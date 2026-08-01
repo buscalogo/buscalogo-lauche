@@ -1,0 +1,19 @@
+[Unit]
+Description=BuscaLogo Agent (server / headless)
+Documentation=https://github.com/buscalogo/buscalogo-lauche
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=BUSCALOGO_HOME=/var/lib/buscalogo-agent
+ExecStart=/opt/buscalogo/buscalogo-agentd --no-tray
+Restart=on-failure
+RestartSec=3
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+NoNewPrivileges=false
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

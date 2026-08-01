@@ -74,6 +74,7 @@ func TestManifestFromReleaseFallbackRegistry(t *testing.T) {
 			{Name: "buscalogo-registry_9.9.9_amd64.deb", BrowserDownloadURL: "https://x/reg.deb"},
 			{Name: "buscalogo-registry_9.9.9_arm64.deb", BrowserDownloadURL: "https://x/reg-arm.deb"},
 			{Name: "buscalogo-agent_9.9.9_amd64.deb", BrowserDownloadURL: "https://x/deb"},
+			{Name: "buscalogo-agent-server_9.9.9_amd64.deb", BrowserDownloadURL: "https://x/server.deb"},
 		},
 	}
 	m, err := manifestFromRelease(rel)
@@ -97,6 +98,9 @@ func TestManifestFromReleaseFallbackRegistry(t *testing.T) {
 	}
 	if m.LinuxAMD64Deb.URL != "https://x/deb" {
 		t.Fatalf("deb url=%s", m.LinuxAMD64Deb.URL)
+	}
+	if m.LinuxAMD64AgentServerDeb.URL != "https://x/server.deb" {
+		t.Fatalf("agent server deb=%s", m.LinuxAMD64AgentServerDeb.URL)
 	}
 }
 

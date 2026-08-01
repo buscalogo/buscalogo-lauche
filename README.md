@@ -28,12 +28,33 @@ Local daemon for the [BuscaLogo](https://buscalogo.com) decentralized search net
 
 ### Install from `.deb`
 
+**Desktop** (Neutralino UI + system tray):
+
 ```bash
 sudo dpkg -i buscalogo-agent_*_amd64.deb
 buscalogo-agent
 ```
 
-Open the panel: [http://127.0.0.1:9970](http://127.0.0.1:9970)
+Panel: [http://127.0.0.1:9970](http://127.0.0.1:9970)
+
+**Server / VPS** (headless + systemd, no GTK):
+
+```bash
+sudo dpkg -i buscalogo-agent-server_*_amd64.deb
+sudo systemctl status buscalogo-agent
+```
+
+The panel listens on `0.0.0.0:9970` by default (`http://<host-ip>:9970`). Protect the port with a firewall, or bind localhost only:
+
+```yaml
+# /var/lib/buscalogo-agent/data/config.yaml
+api:
+  listen: "127.0.0.1:9970"
+```
+
+Then `sudo systemctl restart buscalogo-agent`.
+
+The desktop and server packages conflict — install only one.
 
 ### Build from source
 
@@ -49,6 +70,9 @@ make dist
 
 # Full package (agent + Neutralino desktop + extensions)
 make deb
+
+# Headless server package (systemd, no Neutralino)
+make deb-agent-server
 ```
 
 ### Desktop (Neutralino)

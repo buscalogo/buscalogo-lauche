@@ -151,6 +151,24 @@ func IsDebInstall() bool {
 	return dir == "/opt/buscalogo" || strings.HasPrefix(dir, "/opt/buscalogo/")
 }
 
+const installFlavorMarker = "/opt/buscalogo/.install-flavor"
+
+// IsAgentServerDebInstall retorna true quando o Agent foi instalado pelo .deb server (systemd).
+func IsAgentServerDebInstall() bool {
+	if !IsDebInstall() {
+		return false
+	}
+	b, err := os.ReadFile(installFlavorMarker)
+	if err != nil {
+		// Fallback: unit systemd presente sem marker (instalações manuais).
+		if _, err := os.Stat("/lib/systemd/system/buscalogo-agent.service"); err == nil {
+			return true
+		}
+		return false
+	}
+	return strings.TrimSpace(string(b)) == "server"
+}
+
 // IsRegistryDebInstall retorna true quando o registry está em /opt/buscalogo-registry (.deb).
 func IsRegistryDebInstall() bool {
 	exe, err := os.Executable()

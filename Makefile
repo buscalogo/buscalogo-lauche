@@ -30,7 +30,7 @@ ASSETS_DIR := assets/linux
 # Arquitetura dos binários embutidos (ygg/coredns): amd64 | arm64
 ASSET_ARCH ?= amd64
 
-.PHONY: all build build-windows build-agent-registry assets assets-couchdb run test vet fmt clean tidy dist deb deb-registry release desktop desktop-icons desktop-neutralino desktop-run desktop-build desktop-build-windows msi-stage msi
+.PHONY: all build build-windows build-agent-registry assets assets-couchdb run test vet fmt clean tidy dist deb deb-registry deb-agent-server release desktop desktop-icons desktop-neutralino desktop-run desktop-build desktop-build-windows msi-stage msi
 
 
 all: build
@@ -124,6 +124,12 @@ deb: build desktop-icons desktop-neutralino
 deb-registry:
 	@chmod +x scripts/package-registry-deb.sh
 	@VERSION=$(VERSION) ARCH=$(or $(ARCH),amd64) ./scripts/package-registry-deb.sh
+
+# .deb do Agent headless (systemd, sem Neutralino). amd64.
+deb-agent-server: build
+	$(require-extensions)
+	@chmod +x scripts/package-agent-server-deb.sh
+	@VERSION=$(VERSION) BINARY=$(APP) ./scripts/package-agent-server-deb.sh
 
 assets:
 	@echo ">> Baixando binários $(ASSET_ARCH) para $(ASSETS_DIR)/"

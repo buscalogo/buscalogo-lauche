@@ -1,0 +1,58 @@
+#!/bin/bash
+set -e
+DIR=/opt/buscalogo
+HOME_DATA=/var/lib/buscalogo-agent
+BIN="$DIR/buscalogo-agentd"
+
+if [ "$1" = "configure" ]; then
+	mkdir -p "$HOME_DATA/data/certs" "$HOME_DATA/updates"
+	echo server > "$DIR/.install-flavor"
+	if [ ! -f "$HOME_DATA/data/config.yaml" ] && [ -f "$DIR/config.example.yaml" ]; then
+		cp "$DIR/config.example.yaml" "$HOME_DATA/data/config.yaml"
+		echo "BuscaLogo Agent (server): config criada em $HOME_DATA/data/config.yaml"
+		echo "  API padrão: 0.0.0.0:9970 (painel na rede). Para só localhost:"
+		echo "    api.listen: \"127.0.0.1:9970\"  →  systemctl restart buscalogo-agent"
+	fi
+	if [ -f "$DIR/certs/rootCA.pem" ] && [ ! -f "$HOME_DATA/data/certs/rootCA.pem" ]; then
+		cp -f "$DIR/certs/rootCA.pem" "$HOME_DATA/data/certs/rootCA.pem"
+		chmod 644 "$HOME_DATA/data/certs/rootCA.pem"
+	fi
+	chmod 0755 "$BIN" 2>/dev/null || true
+	chmod 0755 "$DIR/data/bin/coredns" "$DIR/data/bin/yggdrasil" 2>/dev/null || true
+	if [ -d "$DIR/data/bin/couchdb/bin" ]; then
+		chmod -R a+rX "$DIR/data/bin/couchdb"
+		FILELOG="$DIR/data/bin/couchdb/etc/default.d/10-filelog.ini"
+		if [ -f "$FILELOG" ] && [ ! -f "${FILELOG}.disabled" ]; then
+			mv "$FILELOG" "${FILELOG}.disabled" || true
+		fi
+	fi
+	if [ -d "$DIR/extension" ]; then
+		chmod -R a+rX "$DIR/extension"
+	fi
+	if command -v setcap >/dev/null 2>&1; then
+		setcap 'cap_net_bind_service=+ep' "$BIN" 2>/dev/null || true
+		setcap 'cap_net_bind_service=+ep' "$DIR/data/bin/coredns" 2>/dev/null || true
+		setcap 'cap_net_admin,cap_net_raw=+ep' "$DIR/data/bin/yggdrasil" 2>/dev/null || true
+	fi
+	# CA raiz no trust store do SO (best-effort; útil para curl/openssl no servidor).
+	ROOTCA="$DIR/certs/rootCA.pem"
+	if [ -f "$ROOTCA" ]; then
+		if [ -d /usr/local/share/ca-certificates ]; then
+			cp -f "$ROOTCA" /usr/local/share/ca-certificates/buscalogo-root-ca.crt 2>/dev/null || true
+			update-ca-certificates 2>/dev/null || true
+			echo "BuscaLogo: CA raiz instalada (update-ca-certificates)"
+		elif [ -d /etc/pki/ca-trust/source/anchors ]; then
+			cp -f "$ROOTCA" /etc/pki/ca-trust/source/anchors/buscalogo-root-ca.pem 2>/dev/null || true
+			update-ca-trust extract 2>/dev/null || true
+			echo "BuscaLogo: CA raiz instalada (update-ca-trust)"
+		fi
+	fi
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload || true
+		systemctl enable buscalogo-agent.service >/dev/null 2>&1 || true
+		systemctl restart buscalogo-agent.service || true
+	fi
+	echo "BuscaLogo Agent (server): ativo (systemctl status buscalogo-agent)"
+	echo "  Painel: http://<IP-do-host>:9970  — proteja a porta (firewall) ou restrinja api.listen"
+fi
+#DEBHELPER#

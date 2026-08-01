@@ -154,6 +154,13 @@ func (s *Service) assetFromManifest(m *Manifest) (debAsset, error) {
 			return debAsset{}, fmt.Errorf("arquitetura %s sem binário registry na release (suportado: amd64, arm64)", arch)
 		}
 	}
+	if PreferAgentServerDeb() {
+		a := m.LinuxAMD64AgentServerDeb
+		if a.URL == "" {
+			return debAsset{}, fmt.Errorf("manifest sem linux_amd64_agent_server_deb")
+		}
+		return a, nil
+	}
 	a := m.LinuxAMD64Deb
 	if a.URL == "" {
 		return debAsset{}, fmt.Errorf("manifest sem linux_amd64_deb")
@@ -260,6 +267,8 @@ func (s *Service) Download() (Status, error) {
 			} else {
 				name = fmt.Sprintf("buscalogo-registry_%s_linux_%s", normalizeVersion(m.Version), runtime.GOARCH)
 			}
+		} else if PreferAgentServerDeb() {
+			name = fmt.Sprintf("buscalogo-agent-server_%s_amd64.deb", normalizeVersion(m.Version))
 		} else {
 			name = fmt.Sprintf("buscalogo-agent_%s_amd64.deb", normalizeVersion(m.Version))
 		}

@@ -1,0 +1,36 @@
+# BuscaLogo Agent — perfil servidor (VPS / headless)
+# Dados: $BUSCALOGO_HOME/data (padrão: /var/lib/buscalogo-agent/data)
+#
+# Painel exposto na rede. Para só localhost:
+#   api:
+#     listen: "127.0.0.1:9970"
+# Depois: systemctl restart buscalogo-agent
+
+node:
+  name: BuscaLogo Node
+
+api:
+  listen: "0.0.0.0:9970"
+
+web:
+  external_listen: true
+  tls:
+    enabled: true
+    mode: ca
+    port: 443
+
+dns:
+  enabled: true
+  mode: local
+
+yggdrasil:
+  enabled: true
+  mode: own
+
+couchdb:
+  enabled: true
+  mode: own
+
+update:
+  enabled: true
+  check_interval_hours: 24

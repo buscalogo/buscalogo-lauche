@@ -28,6 +28,8 @@ Daemon local da rede de busca descentralizada [BuscaLogo](https://buscalogo.com)
 
 ### Instalar com `.deb`
 
+**Desktop** (UI Neutralino + bandeja):
+
 ```bash
 sudo dpkg -i buscalogo-agent_*_amd64.deb
 buscalogo-agent
@@ -35,7 +37,26 @@ buscalogo-agent
 
 O `.deb` tenta instalar a **CA raiz BuscaLogo** no trust store (HTTPS `.bl`/`.lo`). Se falhar: aba **Sites → Instalar CA**. Leafs são assinados pelo Registry; a chave da CA não fica no Agent.
 
-Abra o painel: [http://127.0.0.1:9970](http://127.0.0.1:9970)
+Painel: [http://127.0.0.1:9970](http://127.0.0.1:9970)
+
+**Servidor / VPS** (headless + systemd, sem GTK):
+
+```bash
+sudo dpkg -i buscalogo-agent-server_*_amd64.deb
+sudo systemctl status buscalogo-agent
+```
+
+O painel escuta em `0.0.0.0:9970` por padrão (`http://<ip-do-host>:9970`). Proteja a porta com firewall, ou restrinja a localhost:
+
+```yaml
+# /var/lib/buscalogo-agent/data/config.yaml
+api:
+  listen: "127.0.0.1:9970"
+```
+
+Depois: `sudo systemctl restart buscalogo-agent`.
+
+Os pacotes desktop e server são conflitantes — instale só um.
 
 ### Compilar do código
 
@@ -51,6 +72,9 @@ make dist
 
 # Pacote completo (agent + desktop Neutralino + extensões)
 make deb
+
+# Pacote servidor headless (systemd, sem Neutralino)
+make deb-agent-server
 ```
 
 ### Desktop (Neutralino)

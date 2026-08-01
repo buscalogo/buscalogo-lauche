@@ -14,6 +14,9 @@ import (
 )
 
 func scheduleDaemonRestart(daemon string, buf *logx.Buffer) error {
+	if paths.IsAgentServerDebInstall() {
+		return scheduleSystemdAgentRestart(buf)
+	}
 	home, err := paths.Home()
 	if err != nil {
 		return err
@@ -46,6 +49,37 @@ exec "$DAEMON" --no-tray
 		return err
 	}
 	buf.Infof("api", "reinício agendado (script=%s, pid=%d)", scriptPath, cmd.Process.Pid)
+	return nil
+}
+
+func scheduleSystemdAgentRestart(buf *logx.Buffer) error {
+	systemctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		return fmt.Errorf("systemctl: %w", err)
+	}
+	script := `#!/bin/sh
+sleep 2
+systemctl restart buscalogo-agent.service
+`
+	home, err := paths.Home()
+	if err != nil {
+		return err
+	}
+	scriptPath := filepath.Join(home, "restart-agent.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command("sh", scriptPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		// Fallback direto
+		cmd = exec.Command(systemctl, "restart", "buscalogo-agent.service")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err2 := cmd.Start(); err2 != nil {
+			return err
+		}
+	}
+	buf.Infof("api", "reinício systemd agendado (buscalogo-agent.service)")
 	return nil
 }
 

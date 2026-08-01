@@ -26,14 +26,15 @@ type Status struct {
 
 // Manifest é o manifest.json anexado ao GitHub Release.
 type Manifest struct {
-	Version               string   `json:"version"`
-	Notes                 string   `json:"notes,omitempty"`
-	LinuxAMD64Deb         debAsset `json:"linux_amd64_deb"`
-	LinuxAMD64Registry    debAsset `json:"linux_amd64_registry"`
-	LinuxARM64Registry    debAsset `json:"linux_arm64_registry"`
-	LinuxAMD64RegistryDeb debAsset `json:"linux_amd64_registry_deb,omitempty"`
-	LinuxARM64RegistryDeb debAsset `json:"linux_arm64_registry_deb,omitempty"`
-	WindowsAMD64MSI       debAsset `json:"windows_amd64_msi,omitempty"`
+	Version                  string   `json:"version"`
+	Notes                    string   `json:"notes,omitempty"`
+	LinuxAMD64Deb            debAsset `json:"linux_amd64_deb"`
+	LinuxAMD64AgentServerDeb debAsset `json:"linux_amd64_agent_server_deb,omitempty"`
+	LinuxAMD64Registry       debAsset `json:"linux_amd64_registry"`
+	LinuxARM64Registry       debAsset `json:"linux_arm64_registry"`
+	LinuxAMD64RegistryDeb    debAsset `json:"linux_amd64_registry_deb,omitempty"`
+	LinuxARM64RegistryDeb    debAsset `json:"linux_arm64_registry_deb,omitempty"`
+	WindowsAMD64MSI          debAsset `json:"windows_amd64_msi,omitempty"`
 }
 
 type debAsset struct {

@@ -59,6 +59,10 @@ jobs:
           make assets assets-couchdb deb VERSION=${{ steps.ver.outputs.version }}
           dpkg-deb -c dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb | grep 'extension/chrome/manifest.json'
           dpkg-deb -c dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb | grep 'extension/firefox/manifest.json'
+          make deb-agent-server VERSION=${{ steps.ver.outputs.version }}
+          dpkg-deb -I dist/buscalogo-agent-server_${{ steps.ver.outputs.version }}_amd64.deb | grep -E 'Package: buscalogo-agent-server|Conflicts: buscalogo-agent'
+          dpkg-deb -c dist/buscalogo-agent-server_${{ steps.ver.outputs.version }}_amd64.deb | grep 'lib/systemd/system/buscalogo-agent.service'
+          dpkg-deb -c dist/buscalogo-agent-server_${{ steps.ver.outputs.version }}_amd64.deb | grep 'extension/chrome/manifest.json'
         env:
           DEB_CODENAME: jammy
 
@@ -97,17 +101,20 @@ jobs:
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
           DEB="dist/buscalogo-agent_${VERSION}_amd64.deb"
+          DEB_SERVER="dist/buscalogo-agent-server_${VERSION}_amd64.deb"
           REG_AMD="dist/buscalogo-registry_${VERSION}_linux_amd64"
           REG_ARM="dist/buscalogo-registry_${VERSION}_linux_arm64"
           REG_DEB_AMD="dist/buscalogo-registry_${VERSION}_amd64.deb"
           REG_DEB_ARM="dist/buscalogo-registry_${VERSION}_arm64.deb"
           SHA=$(sha256sum "$DEB" | awk '{print $1}')
+          SHA_SERVER=$(sha256sum "$DEB_SERVER" | awk '{print $1}')
           REG_AMD_SHA=$(sha256sum "$REG_AMD" | awk '{print $1}')
           REG_ARM_SHA=$(sha256sum "$REG_ARM" | awk '{print $1}')
           REG_DEB_AMD_SHA=$(sha256sum "$REG_DEB_AMD" | awk '{print $1}')
           REG_DEB_ARM_SHA=$(sha256sum "$REG_DEB_ARM" | awk '{print $1}')
           BASE="https://github.com/${{ github.repository }}/releases/download/v${VERSION}"
           URL="${BASE}/buscalogo-agent_${VERSION}_amd64.deb"
+          URL_SERVER="${BASE}/buscalogo-agent-server_${VERSION}_amd64.deb"
           REG_AMD_URL="${BASE}/buscalogo-registry_${VERSION}_linux_amd64"
           REG_ARM_URL="${BASE}/buscalogo-registry_${VERSION}_linux_arm64"
           REG_DEB_AMD_URL="${BASE}/buscalogo-registry_${VERSION}_amd64.deb"
@@ -120,6 +127,11 @@ jobs:
               "url": "${URL}",
               "sha256": "${SHA}",
               "name": "buscalogo-agent_${VERSION}_amd64.deb"
+            },
+            "linux_amd64_agent_server_deb": {
+              "url": "${URL_SERVER}",
+              "sha256": "${SHA_SERVER}",
+              "name": "buscalogo-agent-server_${VERSION}_amd64.deb"
             },
             "linux_amd64_registry": {
               "url": "${REG_AMD_URL}",
@@ -163,6 +175,7 @@ jobs:
           name: linux-release
           path: |
             dist/buscalogo-agent_${{ steps.ver.outputs.version }}_amd64.deb
+            dist/buscalogo-agent-server_${{ steps.ver.outputs.version }}_amd64.deb
             dist/buscalogo-registry_${{ steps.ver.outputs.version }}_linux_amd64
             dist/buscalogo-registry_${{ steps.ver.outputs.version }}_linux_arm64
             dist/buscalogo-registry_${{ steps.ver.outputs.version }}_amd64.deb
@@ -316,6 +329,7 @@ jobs:
         with:
           files: |
             dist/buscalogo-agent_${{ needs.build-linux.outputs.version }}_amd64.deb
+            dist/buscalogo-agent-server_${{ needs.build-linux.outputs.version }}_amd64.deb
             dist/buscalogo-registry_${{ needs.build-linux.outputs.version }}_linux_amd64
             dist/buscalogo-registry_${{ needs.build-linux.outputs.version }}_linux_arm64
             dist/buscalogo-registry_${{ needs.build-linux.outputs.version }}_amd64.deb

@@ -1,0 +1,14 @@
+Package: buscalogo-agent-server
+Version: 0.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: adduser, libnss3-tools
+Conflicts: buscalogo-agent
+Maintainer: BuscaLogo <contato@buscalogo.com>
+Description: BuscaLogo Agent (server / headless)
+ Agente completo para VPS e PCs sem interface gráfica:
+ Yggdrasil, CoreDNS, CouchDB, scraper, sites .bl e painel web.
+ Instala serviço systemd; painel em 0.0.0.0:9970 por padrão
+ (restringir com api.listen em config.yaml).
+ Sem Neutralino/GTK — use buscalogo-agent para desktop.

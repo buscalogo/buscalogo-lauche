@@ -4,6 +4,7 @@ Section: net
 Priority: optional
 Architecture: amd64
 Depends: libappindicator3-1 | libayatana-appindicator3-1, libgtk-3-0, libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37, libnss3-tools
+Conflicts: buscalogo-agent-server
 Maintainer: BuscaLogo <contato@buscalogo.com>
 Description: BuscaLogo Agent
  Agente local para hospedagem de sites .bl, DNS CoreDNS,
@@ -12,3 +13,4 @@ Description: BuscaLogo Agent
  Instala a CA raiz no SO, no NSS (Firefox Snap/Chrome/Brave via
  certutil) e nos IDEs (Cursor/VS Code/Trae/Node); ativa
  security.enterprise_roots no Firefox para usar a CA do sistema.
+ Para VPS/servidor sem GUI use buscalogo-agent-server.

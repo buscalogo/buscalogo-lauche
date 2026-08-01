@@ -3,7 +3,9 @@ package update
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 
 	"buscalogo-agent/internal/logx"
 	"buscalogo-agent/internal/paths"
@@ -26,6 +28,13 @@ func installScriptPath() string {
 	return ""
 }
 
+// PreferAgentServerDeb informa se o update deve baixar o .deb server (systemd).
+func PreferAgentServerDeb() bool {
+	return paths.IsAgentServerDebInstall()
+}
+
+const agentSystemdUnit = "buscalogo-agent.service"
+
 // InstallDeb instala o .deb com privilégios (pkexec).
 func InstallDeb(buf *logx.Buffer, debPath string) error {
 	if !paths.IsDebInstall() {
@@ -43,5 +52,37 @@ func InstallDeb(buf *logx.Buffer, debPath string) error {
 	if err != nil {
 		return fmt.Errorf("instalação: %w (%s)", err, string(out))
 	}
+	// Desktop update-install.sh só faz dpkg; server script já reinicia systemd.
+	// Se for server e o script for o genérico antigo, reforça restart.
+	if PreferAgentServerDeb() {
+		_ = tryRestartAgentSystemd(buf)
+	}
 	return nil
+}
+
+func tryRestartAgentSystemd(buf *logx.Buffer) bool {
+	systemctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		return false
+	}
+	managed := exec.Command(systemctl, "is-active", "--quiet", agentSystemdUnit).Run() == nil ||
+		exec.Command(systemctl, "is-enabled", "--quiet", agentSystemdUnit).Run() == nil
+	if !managed {
+		return false
+	}
+	cmd := exec.Command(systemctl, "restart", agentSystemdUnit)
+	if err := cmd.Start(); err != nil {
+		if buf != nil {
+			buf.Warnf("update", "systemctl restart %s: %v", agentSystemdUnit, err)
+		}
+		return false
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		_ = cmd.Wait()
+	}()
+	if buf != nil {
+		buf.Infof("update", "systemctl restart %s disparado", agentSystemdUnit)
+	}
+	return true
 }
