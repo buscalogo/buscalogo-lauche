@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e
+DIR=/opt/buscalogo-registry
+HOME_DATA=/var/lib/buscalogo-registry
+BIN="$DIR/buscalogo-registry"
+
+if [ "$1" = "configure" ]; then
+	mkdir -p "$HOME_DATA/data"
+	if [ ! -f "$HOME_DATA/data/config.yaml" ] && [ -f "$DIR/config.example.yaml" ]; then
+		cp "$DIR/config.example.yaml" "$HOME_DATA/data/config.yaml"
+		echo "BuscaLogo Registry: config criada em $HOME_DATA/data/config.yaml"
+	fi
+	chmod 0755 "$BIN" 2>/dev/null || true
+	if command -v setcap >/dev/null 2>&1; then
+		setcap 'cap_net_admin,cap_net_raw+ep' "$BIN" 2>/dev/null || true
+	fi
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload || true
+		systemctl enable buscalogo-registry.service >/dev/null 2>&1 || true
+		systemctl restart buscalogo-registry.service || true
+	fi
+	echo "BuscaLogo Registry: ativo (systemctl status buscalogo-registry)"
+fi
+#DEBHELPER#

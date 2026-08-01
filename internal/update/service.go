@@ -130,14 +130,21 @@ func (s *Service) assetFromManifest(m *Manifest) (debAsset, error) {
 	}
 	if s.product == ProductRegistry {
 		arch := runtime.GOARCH
+		wantDeb := PreferRegistryDeb()
 		switch arch {
 		case "arm64":
+			if wantDeb && m.LinuxARM64RegistryDeb.URL != "" {
+				return m.LinuxARM64RegistryDeb, nil
+			}
 			a := m.LinuxARM64Registry
 			if a.URL == "" {
 				return debAsset{}, fmt.Errorf("manifest sem linux_arm64_registry (arch=%s)", arch)
 			}
 			return a, nil
 		case "amd64":
+			if wantDeb && m.LinuxAMD64RegistryDeb.URL != "" {
+				return m.LinuxAMD64RegistryDeb, nil
+			}
 			a := m.LinuxAMD64Registry
 			if a.URL == "" {
 				return debAsset{}, fmt.Errorf("manifest sem linux_amd64_registry (arch=%s)", arch)
@@ -248,7 +255,11 @@ func (s *Service) Download() (Status, error) {
 	name := asset.Name
 	if name == "" {
 		if s.product == ProductRegistry {
-			name = fmt.Sprintf("buscalogo-registry_%s_linux_%s", normalizeVersion(m.Version), runtime.GOARCH)
+			if PreferRegistryDeb() || strings.HasSuffix(strings.ToLower(asset.URL), ".deb") {
+				name = fmt.Sprintf("buscalogo-registry_%s_%s.deb", normalizeVersion(m.Version), runtime.GOARCH)
+			} else {
+				name = fmt.Sprintf("buscalogo-registry_%s_linux_%s", normalizeVersion(m.Version), runtime.GOARCH)
+			}
 		} else {
 			name = fmt.Sprintf("buscalogo-agent_%s_amd64.deb", normalizeVersion(m.Version))
 		}
@@ -323,7 +334,7 @@ func (s *Service) Install() (Status, error) {
 
 	var installErr error
 	if s.product == ProductRegistry {
-		installErr = InstallRegistryBinary(s.buf, st.DebPath)
+		installErr = InstallRegistryArtifact(s.buf, st.DebPath)
 	} else {
 		installErr = InstallDeb(s.buf, st.DebPath)
 	}

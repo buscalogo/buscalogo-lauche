@@ -137,7 +137,7 @@ func Join(first string, more ...string) string {
 	return filepath.Join(append([]string{first}, more...)...)
 }
 
-// IsDebInstall retorna true quando o daemon está instalado em /opt/buscalogo (.deb).
+// IsDebInstall retorna true quando o daemon está instalado em /opt/buscalogo (.deb Agent).
 func IsDebInstall() bool {
 	exe, err := os.Executable()
 	if err != nil {
@@ -149,6 +149,20 @@ func IsDebInstall() bool {
 	}
 	dir := filepath.Clean(filepath.Dir(exe))
 	return dir == "/opt/buscalogo" || strings.HasPrefix(dir, "/opt/buscalogo/")
+}
+
+// IsRegistryDebInstall retorna true quando o registry está em /opt/buscalogo-registry (.deb).
+func IsRegistryDebInstall() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false
+	}
+	dir := filepath.Clean(filepath.Dir(exe))
+	return dir == "/opt/buscalogo-registry" || strings.HasPrefix(dir, "/opt/buscalogo-registry/")
 }
 
 // UpdatesDir é ~/.buscalogo/updates (cache de pacotes .deb baixados).

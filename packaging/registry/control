@@ -1,0 +1,10 @@
+Package: buscalogo-registry
+Version: 0.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: adduser
+Maintainer: BuscaLogo <contato@buscalogo.com>
+Description: BuscaLogo Registry (seed .bl/.lo)
+ Nó seed do ledger BuscaLogo com Yggdrasil, gossip e DNS.
+ Instala serviço systemd que sobe com o sistema operacional.

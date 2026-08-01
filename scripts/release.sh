@@ -44,9 +44,9 @@ echo ">> Versão atual: $CUR"
 echo ">> Nova versão:  $NEW ($TAG)"
 echo ">> CI vai publicar:"
 echo "   - buscalogo-agent_${NEW}_amd64.deb (+ MSI / extensões)"
-echo "   - buscalogo-registry_${NEW}_linux_amd64  ← VPS x86_64"
-echo "   - buscalogo-registry_${NEW}_linux_arm64  ← Raspberry / Orange Pi (aarch64)"
-echo "   - manifest.json (deb + registry amd64/arm64)"
+echo "   - buscalogo-registry_${NEW}_linux_amd64 / _linux_arm64  ← binários"
+echo "   - buscalogo-registry_${NEW}_amd64.deb / _arm64.deb     ← systemd"
+echo "   - manifest.json"
 
 # Bloqueia binários acidentais no commit
 if git ls-files --error-unmatch agent buscalogo-agent 2>/dev/null; then
@@ -84,8 +84,8 @@ Release ${NEW}.
 
 Bump VERSION for GitHub Actions to build and publish:
 - buscalogo-agent_${NEW}_amd64.deb
-- buscalogo-registry_${NEW}_linux_amd64
-- buscalogo-registry_${NEW}_linux_arm64 (Pi / Orange Pi)
+- buscalogo-registry_${NEW}_{amd64,arm64}.deb (systemd)
+- buscalogo-registry_${NEW}_linux_{amd64,arm64} (binário)
 EOF
 )"
 

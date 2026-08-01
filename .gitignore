@@ -30,6 +30,8 @@ dist/buscalogo-agent/
 dist/buscalogo-agent-win/
 dist/msi-stage/
 dist/deb/
+dist/deb-registry-*/
+dist/buscalogo-registry_*
 dist/*.deb
 dist/*.msi
 dist/*.zip

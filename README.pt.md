@@ -154,7 +154,7 @@ make release BUMP=minor
 make release BUMP=0.2.0
 ```
 
-O script sobe commit + tag; o Actions publica o **Agent** (`.deb`/MSI) e o **registry** (`linux_amd64` + `linux_arm64` no `manifest.json`). Nós com `update.enabled: true` (systemd ou PM2) atualizam sozinhos.
+O script sobe commit + tag; o Actions publica o **Agent** (`.deb`/MSI) e o **registry** (`.deb` + binários amd64/arm64 no `manifest.json`). Nós com `update.enabled: true` atualizam sozinhos.
 
 **Ordem de release (TLD `.lo` / mesh):** publique o **Agent/registry** (este repo) primeiro; o **Dpanel** embute o binário do Agent — só faça release do Dpanel depois que a tag com suporte a `.bl`/`.lo` estiver disponível.
 

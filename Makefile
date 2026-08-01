@@ -30,7 +30,8 @@ ASSETS_DIR := assets/linux
 # Arquitetura dos binários embutidos (ygg/coredns): amd64 | arm64
 ASSET_ARCH ?= amd64
 
-.PHONY: all build build-windows build-agent-registry assets assets-couchdb run test vet fmt clean tidy dist deb release desktop desktop-icons desktop-neutralino desktop-run desktop-build desktop-build-windows msi-stage msi
+.PHONY: all build build-windows build-agent-registry assets assets-couchdb run test vet fmt clean tidy dist deb deb-registry release desktop desktop-icons desktop-neutralino desktop-run desktop-build desktop-build-windows msi-stage msi
+
 
 all: build
 
@@ -116,6 +117,11 @@ deb: build desktop-icons desktop-neutralino
 	@echo ">> Pacote .deb: dist/$(APP)_$(VERSION)_amd64.deb"
 	@echo ">> Extensões no pacote:"
 	@dpkg-deb -c dist/$(APP)_$(VERSION)_amd64.deb | grep -E 'extension/.*/manifest.json' || (echo ">> ERRO: manifests ausentes no .deb"; exit 1)
+
+# .deb do registry (systemd). ARCH=amd64|arm64
+deb-registry:
+	@chmod +x scripts/package-registry-deb.sh
+	@VERSION=$(VERSION) ARCH=$(or $(ARCH),amd64) ./scripts/package-registry-deb.sh
 
 assets:
 	@echo ">> Baixando binários $(ASSET_ARCH) para $(ASSETS_DIR)/"

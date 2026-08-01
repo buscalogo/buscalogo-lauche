@@ -66,11 +66,21 @@ func manifestFromRelease(rel *ghRelease) (*Manifest, error) {
 	}
 	// fallback: montar a partir dos assets no release
 	var deb *ghAsset
-	regs := map[string]*ghAsset{} // arch → asset
+	regs := map[string]*ghAsset{}    // arch → binary
+	regDebs := map[string]*ghAsset{} // arch → .deb
 	for i := range rel.Assets {
 		n := rel.Assets[i].Name
-		if strings.HasSuffix(n, "_amd64.deb") && deb == nil {
+		if strings.HasSuffix(n, "_amd64.deb") && strings.Contains(n, "buscalogo-agent") && deb == nil {
 			deb = &rel.Assets[i]
+		}
+		if strings.Contains(n, "buscalogo-registry") && strings.HasSuffix(n, ".deb") {
+			switch {
+			case strings.Contains(n, "arm64"):
+				regDebs["arm64"] = &rel.Assets[i]
+			case strings.Contains(n, "amd64"):
+				regDebs["amd64"] = &rel.Assets[i]
+			}
+			continue
 		}
 		if !strings.Contains(n, "buscalogo-registry") || strings.HasSuffix(n, ".deb") {
 			continue
@@ -82,7 +92,7 @@ func manifestFromRelease(rel *ghRelease) (*Manifest, error) {
 			regs["amd64"] = &rel.Assets[i]
 		}
 	}
-	if deb == nil && len(regs) == 0 {
+	if deb == nil && len(regs) == 0 && len(regDebs) == 0 {
 		return nil, fmt.Errorf("release %s sem manifest.json nem assets", rel.TagName)
 	}
 	ver := strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v")
@@ -98,6 +108,12 @@ func manifestFromRelease(rel *ghRelease) (*Manifest, error) {
 	}
 	if a := regs["arm64"]; a != nil {
 		m.LinuxARM64Registry = debAsset{URL: a.BrowserDownloadURL, Name: a.Name}
+	}
+	if a := regDebs["amd64"]; a != nil {
+		m.LinuxAMD64RegistryDeb = debAsset{URL: a.BrowserDownloadURL, Name: a.Name}
+	}
+	if a := regDebs["arm64"]; a != nil {
+		m.LinuxARM64RegistryDeb = debAsset{URL: a.BrowserDownloadURL, Name: a.Name}
 	}
 	return m, nil
 }

@@ -71,6 +71,8 @@ func TestManifestFromReleaseFallbackRegistry(t *testing.T) {
 		Assets: []ghAsset{
 			{Name: "buscalogo-registry_9.9.9_linux_amd64", BrowserDownloadURL: "https://x/reg"},
 			{Name: "buscalogo-registry_9.9.9_linux_arm64", BrowserDownloadURL: "https://x/reg-arm"},
+			{Name: "buscalogo-registry_9.9.9_amd64.deb", BrowserDownloadURL: "https://x/reg.deb"},
+			{Name: "buscalogo-registry_9.9.9_arm64.deb", BrowserDownloadURL: "https://x/reg-arm.deb"},
 			{Name: "buscalogo-agent_9.9.9_amd64.deb", BrowserDownloadURL: "https://x/deb"},
 		},
 	}
@@ -86,6 +88,12 @@ func TestManifestFromReleaseFallbackRegistry(t *testing.T) {
 	}
 	if m.LinuxARM64Registry.URL != "https://x/reg-arm" {
 		t.Fatalf("arm64 url=%s", m.LinuxARM64Registry.URL)
+	}
+	if m.LinuxAMD64RegistryDeb.URL != "https://x/reg.deb" {
+		t.Fatalf("registry deb=%s", m.LinuxAMD64RegistryDeb.URL)
+	}
+	if m.LinuxARM64RegistryDeb.URL != "https://x/reg-arm.deb" {
+		t.Fatalf("registry arm deb=%s", m.LinuxARM64RegistryDeb.URL)
 	}
 	if m.LinuxAMD64Deb.URL != "https://x/deb" {
 		t.Fatalf("deb url=%s", m.LinuxAMD64Deb.URL)
