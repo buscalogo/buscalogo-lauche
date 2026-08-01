@@ -1680,6 +1680,58 @@ async function doWebRestart() {
   if (btn) btn.disabled = false;
 }
 
+async function doSystemRestartNetwork() {
+  const btn = $("#sys-restart-network");
+  if (btn) btn.disabled = true;
+  const prev = btn ? btn.textContent : "";
+  if (btn) btn.textContent = "Reiniciando rede…";
+  try {
+    const r = await fetch("/api/system/restart-network", { method: "POST" });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    toast("Rede reiniciada");
+    fetchStatus();
+    if (typeof refreshNetworkPorts === "function") refreshNetworkPorts();
+  } catch (e) {
+    toast("Falha ao reiniciar rede: " + e.message, 5000);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prev || "Reiniciar rede";
+    }
+  }
+}
+
+async function doSystemRestartAll() {
+  if (!confirm("Reiniciar o Agent por completo?\n\nIsso encerra serviços órfãos e sobe o agentd de novo. O painel ficará offline por alguns segundos.")) {
+    return;
+  }
+  const btn = $("#sys-restart-all");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/system/restart", { method: "POST" });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    toast(d.hint || "Reiniciando Agent…", 8000);
+    // Aguarda o daemon voltar
+    for (let i = 0; i < 40; i++) {
+      await new Promise((res) => setTimeout(res, 1500));
+      try {
+        const ok = await fetch("/api/status", { cache: "no-store" });
+        if (ok.ok) {
+          toast("Agent de volta");
+          fetchStatus();
+          return;
+        }
+      } catch (_) { /* ainda caindo */ }
+    }
+    toast("Aguarde e recarregue o painel (http://127.0.0.1:9970)", 6000);
+  } catch (e) {
+    toast("Falha: " + e.message, 5000);
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function addSite() {
   const host = $("#site-host").value.trim();
   const type = $("#site-type").value;
@@ -2097,6 +2149,8 @@ document.addEventListener("click", (ev) => {
   if (ev.target.id === "registry-refresh") refreshRegistry();
   if (ev.target.id === "web-enable-80") doWebEnable80();
   if (ev.target.id === "web-restart") doWebRestart();
+  if (ev.target.id === "sys-restart-network") doSystemRestartNetwork();
+  if (ev.target.id === "sys-restart-all") doSystemRestartAll();
   if (ev.target.id === "ca-refresh") refreshCAStatus();
   if (ev.target.id === "ca-install-trust") {
     (async () => {

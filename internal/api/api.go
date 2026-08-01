@@ -317,6 +317,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/autostart/enable", s.handleAutostartEnable)
 	mux.HandleFunc("POST /api/autostart/disable", s.handleAutostartDisable)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
+	mux.HandleFunc("POST /api/system/restart-network", s.handleSystemRestartNetwork)
+	mux.HandleFunc("POST /api/system/restart", s.handleSystemRestartAll)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/update/status", s.handleUpdateStatus)
 	mux.HandleFunc("POST /api/update/check", s.handleUpdateCheck)
@@ -1845,11 +1847,15 @@ func (s *Server) stopAllAndExit() {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	_ = s.Shutdown(ctx)
+	if s.p2pdomain != nil {
+		_ = s.p2pdomain.Stop()
+	}
 	_ = s.sites.Stop()
 	_ = s.coredns.Stop()
 	_ = s.couchdb.Stop()
 	_ = s.scraper.Stop()
 	_ = s.ygg.Stop()
+	s.killOrphanServices()
 	s.buf.Infof("api", "encerrado")
 	os.Exit(0)
 }

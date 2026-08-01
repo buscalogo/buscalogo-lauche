@@ -20,14 +20,19 @@ func scheduleDaemonRestart(daemon string, buf *logx.Buffer) error {
 	}
 	scriptPath := filepath.Join(home, "restart-agent.sh")
 	script := fmt.Sprintf(`#!/bin/sh
-# Gerado pelo BuscaLogo Agent — reinício pós-atualização
+# Gerado pelo BuscaLogo Agent — reinício completo (órfãos + daemon)
 set -e
 DAEMON=%q
 sleep 2
-pkill -TERM -f 'buscalogo-agentd.*--no-tray' 2>/dev/null || true
-sleep 7
+pkill -TERM -f 'buscalogo-agentd' 2>/dev/null || true
+sleep 2
+# Serviços embutidos que às vezes ficam órfãos ao fechar o Launch
+pkill -TERM -f 'yggdrasil.*buscalogo|buscalogo.*yggdrasil' 2>/dev/null || true
+pkill -TERM -f 'coredns.*buscalogo|buscalogo.*coredns|coredns.*Corefile' 2>/dev/null || true
 pkill -f beam.smp 2>/dev/null || true
 pkill -f epmd 2>/dev/null || true
+sleep 4
+pkill -KILL -f 'buscalogo-agentd' 2>/dev/null || true
 export BUSCALOGO_POST_UPDATE=1
 exec "$DAEMON" --no-tray
 `, daemon)
