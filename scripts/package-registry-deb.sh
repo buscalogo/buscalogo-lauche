@@ -77,7 +77,8 @@ chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm"
 INSTALLED_SIZE="$(du -sk "$STAGE" | awk '{print $1}')"
 echo "Installed-Size: ${INSTALLED_SIZE}" >> "$STAGE/DEBIAN/control"
 
-(cd "$ROOT/dist" && fakeroot dpkg-deb --build "$(basename "$STAGE")" "$(basename "$OUT_DEB")")
+# -Zgzip: Orange Pi / Armbian antigos não leem control.tar.zst (default do dpkg novo)
+(cd "$ROOT/dist" && fakeroot dpkg-deb -Zgzip --build "$(basename "$STAGE")" "$(basename "$OUT_DEB")")
 echo "→ $OUT_DEB"
 dpkg-deb -I "$OUT_DEB" | head -20
 ls -lh "$OUT_DEB"

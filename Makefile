@@ -113,7 +113,7 @@ deb: build desktop-icons desktop-neutralino
 	@cp dist/postinst dist/deb/DEBIAN/postinst
 	@cp dist/postrm dist/deb/DEBIAN/postrm
 	@chmod +x dist/deb/DEBIAN/postinst dist/deb/DEBIAN/postrm
-	@cd dist && fakeroot dpkg-deb --build deb $(APP)_$(VERSION)_amd64.deb
+	@cd dist && fakeroot dpkg-deb -Zgzip --build deb $(APP)_$(VERSION)_amd64.deb
 	@echo ">> Pacote .deb: dist/$(APP)_$(VERSION)_amd64.deb"
 	@echo ">> Extensões no pacote:"
 	@dpkg-deb -c dist/$(APP)_$(VERSION)_amd64.deb | grep -E 'extension/.*/manifest.json' || (echo ">> ERRO: manifests ausentes no .deb"; exit 1)
